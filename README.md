@@ -1,16 +1,45 @@
-# DFI_Cdiff_metagenomics
+# Optimized MetaPhlAn4 and StrainPhlAn
 
 
-## MetaPhlAn4 with Local StatQ Implementation
+## MetaPhlAn4 - Local StatQ Implementation
 
-1. Install this version of MetaPhlAn here
-https://github.com/biobakery/MetaPhlAn/tree/local_stat_q
+1. Install this version of MetaPhlAn:
+(https://github.com/biobakery/MetaPhlAn/tree/local_stat_q)
 
-2. Modify the script "stat_q.cfg" to your choice of species and associated stat_q value (default 0.20, lower value corresponds to higher sensitivity)
-e.g. s__Clostridioides_difficile = 0.05
+2. Modify `stat_q.cfg` to your choice of species and associated `stat_q` value (default 0.20, lower value corresponds to higher sensitivity)
+e.g. `s__Clostridioides_difficile = 0.05`
 
-3. To customize the marker genes of your choice
+
+## MetaPhlAn4 - Optimize markers database for your strains
+
+1. Use extract_markers.py to extract markers for a given SGB of your choice from the metaphlan database pkl file.
+```
+mkdir -p db_markers
+extract_markers.py -c t__SGB16955 -o db_markers/ -d /path/to/metaphlan_db/mpa_vJun23_CHOCOPhlAnSGB_202403.pkl`
+```
+
+2. Use the extracted markers to check alignment/presence with your set of strains (using BLAST, Bowtie2 etc.)
+
+3. Create a text file with markers to exclude (that have low mapping score to your set of strains from your analysis)
+Say exclude_markers.txt, with the names of markers to be excluded:
+```
+UniRef90_E6DA28|7__10|SGB16955
+UniRef90_U7M4A5|1__8|SGB16955
+UniRef90_D4HFG6|3__8|SGB16955
+UniRef90_Q6A6M1|5__8|SGB16955
+UniRef90_A0A1N4YMG9|1__6|SGB16955
+UniRef90_A0A2B7JWE2|1__4|SGB16955
+```
+
+4. Run `metaphlan` with `--ignore_markers exclude_markers.txt`
+
 
 ## StrainPhlAn Optimized for C. diff
-Download latest version of St
-Download strainphlan_tuned.sh and follow the instructions 
+
+1. Download latest version of MetaPhlAn4
+
+2. Follow the instructions given in strainphlan_tuned.sh.
+
+
+# Citation
+Coming soon.
