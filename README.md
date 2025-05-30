@@ -1,5 +1,13 @@
 # Optimized MetaPhlAn4 and StrainPhlAn
 
+## Run the analysis
+To run the analysis as described in the publication, download the analysis_code folder and data folder from here [].
+Make sure you have compatible versions of RStudio and R installed.
+Open DFI_Cdiff_metagenomics.Rproj using RStudio and execute code as required or knit to generate the html with all figures.
+
+The analysis code was compiled in RStudio (2025.05.0+496) and R(4.5.0 (2025-04-11) )
+The versions of packages used are in:
+
 
 ## MetaPhlAn4 - Local StatQ Implementation
 
