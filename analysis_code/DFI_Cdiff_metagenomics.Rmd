@@ -1,0 +1,4865 @@
+---
+title: "Culture-independent strain typing of *Clostridioides difficile* in fecal samples"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: flatly
+    highlight: tango
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, echo = FALSE, message = FALSE}
+#rm(list = ls())
+knitr::opts_chunk$set(echo = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE, 
+                      results = 'hide')
+
+# make warning = F and include = F
+
+pacman::p_load(tidyverse, 
+               #holds: dplyr, tidyr, readr, tibble, stringr, purrr, forcats
+               tidyr,
+               janitor, #added tidying 
+               lubridate, # for timeline
+               yingtools2, #clinical and microbiome package #https://github.com/ying14/yingtools2
+               ggplot2, #necessary plotting
+               rstatix, #stats tools
+               svglite, # to save svg files
+               ggprism, #preferred theme
+               patchwork, #add plots together
+               cowplot, #add plots together
+               RPostgreSQL, ## to access postgres db
+               vegan, ##for diversity
+               ggpmisc, ##additional plots
+               ggview, ## helps preview huge plots
+               ggtext, ## ggtext::element_markdown for species italics
+               ComplexHeatmap, # heatmap
+               gridtext, # adds gt_render and other text tools to grid plots
+               ape,# to import and export phylogenetic files
+              ggtree,          # to visualize phylogenetic files
+              ggtreeExtra,     # extra tools for tree
+              tidytree,        # tidy based tree tools
+              RPostgreSQL,     # to access postgres db
+              treeio,          # to visualize phylogenetic files
+              svglite,         # to save as svg
+              ggnewscale,     # to add additional layers of color schemes
+               data.table, #for last()
+               install = FALSE)
+
+library(here) # file management
+library(fs) # file management
+library(phyloseq) # for phyloseq tools
+library(ggplotify) # make plot or grid into ggplot
+
+```
+
+```{r paths}
+file_PATH=here()
+fig_PATH=here(file_PATH, "figs")
+fun_PATH=here(file_PATH, "R")
+data_PATH=here(file_PATH,"data")
+```
+
+```{r functions}
+## code for genoMatchID functions
+source(here(fun_PATH, "genoMatchID_functions.R"))
+    
+# for phylo colors
+source(here(fun_PATH, "getNCBIPal.R"))
+source(here(fun_PATH, "Sophie_Style_Guide.R"))
+
+# for taxplots
+source(here(fun_PATH, "taxplot.R"))
+# for taxid RA plots
+source(here(fun_PATH, "taxid_RA_plot.R"))
+# for count plots
+source(here(fun_PATH, "count_plot.R"))
+
+# Define support: indices where value > 0
+supp <- function(x) {
+  which(x > 0)
+}
+
+# Define complement support: indices where value == 0
+supp_c <- function(x) {
+  which(x == 0)
+}
+```
+
+```{r plot_set}
+# tunable variables ----
+# Define likely to change features as variables at beginning of the plotting script
+# Theme elements
+font <- "Helvetica"
+fig_text_size <- 5 #pts
+fig_lab_size <- 8
+table_text_size <- 7
+line_size <- 0.5 #pts
+# Figure elements
+res <- 300  # for dpi
+pg_width <- 180 # mm
+pg_height <- 247 # mm
+pg_units <- "mm"
+
+## cha
+maxwidth = unit(180, pg_units)
+maxheight = unit(247, pg_units)
+
+# lettering on figures is lower case
+
+output_tabletype <- ".csv"
+output_figtype <- ".svg"
+# should be jpeg or pdf for final submission
+
+
+
+fig_lab_pos_x <- 0
+fig_lab_pos_y <- 1
+label_type <- "auto" #lowercase in plotgrid
+
+
+# set global theme elements -----
+# unit is pts
+theme_set(theme_prism(
+  base_size = fig_text_size,
+  base_line_size = line_size,
+  base_rect_size = line_size ) + 
+  theme(
+    text = element_text(family = font),
+    line = element_line(linewidth = line_size),
+    plot.title = element_text(size = 18, face = "bold"),
+    #plot.background = element_blank(), 
+    # axes text
+    axis.ticks = element_line(linewidth = line_size),
+    axis.text.x = element_text(size = fig_text_size),
+    axis.text.y = element_text(size = fig_text_size),
+    axis.title = element_text(size = fig_text_size+1), 
+    # strip
+    strip.background = element_blank(), 
+    strip.placement = "outside",
+    # legend
+    legend.background = element_blank(),
+    legend.text = element_text(size = fig_text_size+1),
+  )
+)
+
+
+sophie_theme <- function(){
+  theme_prism(border= TRUE) +
+    theme(
+      text = element_text(family = font,
+                          size = fig_text_size),
+      line = element_line(linewidth = line_size),
+      axis.title = element_markdown(size = rel(1.25)),
+      axis.text = element_text(size = rel(1.15)),
+      plot.title = element_text(size = rel(1.5),
+                            hjust = 0.5),
+      panel.grid = element_blank(),
+      strip.text = element_markdown(size = rel(1.25)),
+      legend.title = element_markdown(size = rel(1.5), face = "bold"),
+      legend.text = element_markdown(size = rel(1.5))
+      )
+}
+
+tag_theme <- function(){
+    theme(
+      plot.tag = element_text(
+        family = font,
+        face = "bold",
+        size = 12 ,
+        hjust = 0,  # left align
+        vjust = 1   # top align
+        )
+      )
+}
+```
+
+```{r load_data}
+## samp_data -----
+## sample redcap and pcr d ata
+samp_data <- last(list.files(data_PATH, pattern = "_samp_data.RData", full.names = TRUE))
+load(last(samp_data))
+
+## clin_tax_data -----
+## data of cleaned up tax class metagenomes from pts
+clin_tax_data <- last(list.files(path = data_PATH, pattern = "_clin_tax_data.RData",
+                            full.names = TRUE))
+load(last(clin_tax_data))
+list2env(clinsamp_tax_list, .GlobalEnv)
+
+
+## syn_spikein_data -----
+syn_spikein_data <- last(list.files(path = data_PATH, pattern = "_DFI.150_CDC.30_spikeins.RData",
+                    full.names = TRUE))
+load(last(syn_spikein_data))
+
+
+## syn_spikein_data -----
+statq_spikein_data <- last(list.files(path = data_PATH, pattern = "_SS.TAX.011-statq-lists.RData",
+                    full.names = TRUE))
+load(last(statq_spikein_data))
+#list2env(total_mp_tax_list, .GlobalEnv)
+
+
+## cdiff_qpcr -----
+## cdiff 16S qpcr mean copies 
+cdiff_qpcr_raw <- read.csv(here(data_PATH, "SS.CS.70_qpcr.sampleset.df_2024-03-12.csv"))[-1]
+
+cdiff_qpcr<- cdiff_qpcr_raw %>%
+  ungroup() %>%
+  group_by(genoMatchID)%>%
+  mutate(mean.copies = mean(copies_per_mg, na.rm = T)) %>%
+  ungroup()
+
+## SS73_samplist -----
+SS73_samplist_raw = fread(here(data_PATH,"SS.TAX.007-SS73_MLST_final.csv")) %>% 
+      select(-V1)
+    
+SS73_samplist = SS73_samplist_raw %>% 
+      mutate(strain_num = str_extract(seqid, "[0-9]\\.fna$")) %>% 
+      mutate(strain_num = str_remove(strain_num, "\\.fna$")) %>% 
+      mutate(strain = paste0(genoMatchID, "_", strain_num))
+
+## wgs_pcr ----
+## tcdB pcr on cultured cdiff isolates ----
+wgs_pcr <- read.csv(here(data_PATH, "SS73_WGS_PCR_2024-11-19.csv"))%>% 
+  left_join(all_pcr_samps_data) %>% 
+  mutate(mismatch = ifelse(wgs_tcdB == tcdB, "N", "Y"))
+
+
+## MLST_lookup -----
+MLST_lookup <- read.csv(here(data_PATH, "typing", "pubMLST_clade_ST_lookup.csv")) %>%
+    mutate(ST = as.character(ST))
+
+## ani -------
+fastani_FILE = list.files(
+  data_PATH,
+  pattern = "fastANI_ani.txt",
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+ani = fread(fastani_FILE, sep="\t")
+
+```
+
+```{r sampleset}
+sampleset_FILE <-  list.files(data_PATH,
+           pattern = "samp.list.full.+csv",
+           recursive = FALSE,
+           full.names = TRUE
+           )
+## all 505 samples 
+sampleset = read.csv(sampleset_FILE) %>% 
+  select(-X)
+```
+
+## Benchmarking microbial profiling and *C. difficile* detection performance
+
+```{r DFI_tree, fig.width=9, fig.height=9}
+library(treeio)
+library(ggtreeExtra)
+
+## load tree -----
+syncom_tree <- ape::read.tree(here(data_PATH,"custom_bac71_phylogenomic-tree.txt"))
+
+## load meta ----
+syncom_meta <- read.csv(here(data_PATH, "DFI.150_NCBI_full_true.tax_2024-03-27.csv")) %>% select(-X) %>% 
+  mutate(label_key = str_extract(seq_id, "[A-Z]+.[0-9]+.[0-9]+")) %>% 
+  mutate(label_key = str_replace_all(label_key, "\\.", "_"))
+
+## reassign tip label of tree -----------
+## extract the tip oder in tree (vector)
+tip_order = syncom_tree$tip.label
+
+tip_key <- tibble(label = tip_order) %>% 
+            mutate(label_key = str_remove(label, "^DFI_150_[0-9]+_"),
+                   label_key = str_remove(label_key, "_prokkaContigs_fna$"),
+                   label_key = str_extract(label_key, "[A-Z]+.[0-9]+.[0-9]+"),
+                   label_key = str_replace_all(label_key, "\\.", "_"))
+
+## get taxid to the tip labels
+tax_key = syncom_meta %>%
+  left_join(tip_key) %>% 
+  mutate(
+    across(Kingdom:Genus,
+    ~ paste0("*",.x,"*")
+  )) %>% 
+  mutate(label = factor(label,
+                        levels= tip_order)) %>% 
+  arrange(label) %>%  ## factor the tip order to match the tip order
+  # shorten the species labels to only first letter of Genus
+  mutate(
+    g_lab = str_extract(Genus, "[A-Z][a-z]"),
+    s_lab = str_remove(Species, "^[A-Z][a-z]+ "),
+    species_lab = paste0(g_lab, ". ", s_lab)
+    )
+
+
+## add phylo nodes ------
+phy_nodes <- as_tibble(syncom_tree) %>% 
+  select(node, label) %>% 
+  left_join(tax_key %>% 
+              select(label, Phylum, Family, Genus, Species, species_lab)) %>% 
+  filter(!is.na(node) & !is.na(Phylum)) %>% 
+  select(node, label, Phylum, Family, Genus,Species, species_lab)
+
+## add helper data to tree
+tree_phy = as.phylo(syncom_tree)
+DFI_syncom_tree = full_join(tree_phy, phy_nodes, by = "node")
+
+
+## rename the tips 
+DFI_syncom_tree@phylo$tip.label <- phy_nodes$species_lab
+
+
+## plot tree ----
+## syncom tree base
+circ_tree <- ggtree(DFI_syncom_tree,
+        branch.length='none',
+        layout = "circular")
+
+
+## added tips and phylum level highlight
+phylum_cols= c(
+  "*Bacillota*" = "#B56B45",
+  "*Fusobacteriota*"= "#4E8098",
+  "*Synergistota*"= "#FFB5C5", 
+  "*Thermodesulfobacteriota*"= "yellow",
+  "*Pseudomonadota*"= "red",
+  "*Verrucomicrobiota*"= "#4A1942",
+  "*Bacteroidota*"= "#51AB9B",
+  "*Actinomycetota*"= "#A77097"
+  )
+
+phy_tree <- open_tree(circ_tree, 90) + 
+  # add the labels
+  geom_tiplab(
+    size =7/ggplot2::.pt,
+    align = TRUE,
+    linesize = 0,
+    offset = 0.2,
+    fontface = 3,
+    family = font
+      ) +
+  ggtree::geom_hilight(
+    data = phy_nodes,
+    mapping = aes(
+      node = node,
+      fill = Phylum),
+    type = "roundrect",
+    to.bottom = TRUE ,
+    align = "both"
+  )+
+    # colors for STs
+  scale_fill_manual(
+    "**SynCom Phylum**",
+    values = phylum_cols
+  )+
+  theme(
+    # remove weird lines
+    axis.line = element_blank(),
+    # move legend
+    legend.position = c(0.7,0.3), #
+    legend.text = ggtext::element_markdown(family = font,
+                                           size = 6.5),
+    legend.title = ggtext::element_markdown(family = font,
+                                            size =7),
+    legend.direction = "vertical") 
+
+```
+
+```{r cdiff_accuracy}
+cdc_meta <- cdc_meta %>% 
+  mutate(ST = str_remove(mlst, "ST")) %>% 
+  left_join(MLST_lookup %>% 
+              select(ST, mlst_clade))
+
+cdiff_detect_meta <- mp_spikein_tax_df %>% 
+  distinct(seq_id, assembly_accession, bg_community, rep, n_reads)
+  
+cdiff_detect_grab <- mp_spikein_tax_df %>% 
+  filter(taxid == 1496)
+
+cdiff_detect_df <- cdiff_detect_meta %>% 
+  left_join(cdc_meta %>% 
+              select(assembly_accession, strain, mlst, mlst_clade)) %>% 
+  left_join(cdiff_detect_grab %>% select(assembly_accession, bg_community, rep, n_reads, relative_abundance)) %>% 
+  replace_na(list(relative_abundance = 0))
+
+
+sum_df <- cdiff_detect_df %>% 
+  group_by(seq_id) %>% 
+  mutate(TP = ifelse(relative_abundance > 0, 1, 0),
+         FP = 0,
+         FN = ifelse(relative_abundance == 0, 1, 0)
+         ) %>% 
+  ungroup() %>% 
+  group_by(n_reads) %>% 
+  summarize(tot_TP = sum(TP),
+            tot_FP = sum(FP),
+            tot_FN = sum(FN),
+            PPV = (sum(TP)/(sum(TP)+sum(FP))),
+            recall = (sum(TP)/(sum(TP)+sum(FN))),
+            F1 = ((2*PPV*recall)/(PPV+recall))
+            ) %>% 
+  ungroup()
+
+
+```
+
+```{r Supp_syncom_performance_comp, fig.width = 4,fig.height=16}
+# Expand each sample row 5 times for the runs
+syncom_true_df <- syncom_meta %>% 
+  select(seq_id, taxid) %>% 
+  left_join(true.tax)
+
+syncom_runs <- syncom_true_df[rep(1:nrow(syncom_true_df), each = 10), ]
+# add rep column
+syncom_runs$rep<- rep(1:10, 
+                      times = nrow(syncom_true_df))
+
+syncom_mp <- mp_syncom_tax_df %>% 
+              filter(relative_abundance > 0) %>% 
+              select(rep = seq_id, 
+                     taxid, # join with taxid (species level)
+                     min_taxid, # most defined taxid
+                     species_lab, # orginal annotation by tool
+                     rep_ra = relative_abundance) %>% 
+  mutate(rep = as.numeric(rep)) %>% 
+  full_join(syncom_runs %>% 
+              select(seq_id, taxid, rep,
+                     "Kingdom", "Phylum", "Class", 
+                     "Order", "Family", "Genus", "Species",
+                     true_ra = "relative_abundance")
+            ) %>% 
+  mutate(taxclass = "mp4") %>% 
+  # per taxid and rep, if the taxa is detected
+  group_by(taxid, rep) %>% 
+  mutate(detect = ifelse(rep_ra > 0, T, F)) %>% 
+  ungroup()%>% 
+  distinct(seq_id, taxid, rep, .keep_all = TRUE)
+
+
+syncom_detect_df <- syncom_mp %>% 
+  select(seq_id, taxid, Phylum, Genus, Species, 
+         taxclass, rep, detect, rep_ra,true_ra)%>% 
+  ungroup() %>% 
+  # if na for these, they were wrong
+  replace_na(list(true_ra = 0,
+                  rep_ra = 0)) %>% 
+  # calculation per sample per taxclass setting
+  # here rep=sample and seq_id is the taxa genome
+  group_by(rep, taxclass) %>% 
+  mutate(
+    l1_norm = sum(abs(true_ra-rep_ra)),
+    TP =  length(intersect(supp(true_ra), supp(rep_ra))),  # see cami supplement
+    FP = length(intersect(supp_c(true_ra), supp(rep_ra))),
+    FN = length(intersect(supp(true_ra), supp_c(rep_ra))),
+    # overall profile
+    purity = (TP/(TP+FP)),
+    recall = (TP/(TP+FN))
+  ) %>% 
+  ungroup()
+
+# summary for detection by phylum
+syncom_detect_default_phy_sum <- syncom_detect_df %>% 
+  filter(taxclass == "mp4") %>% 
+  group_by(Phylum,  detect) %>% 
+  summarize(n = n(), # of all 10 reps
+            n_taxid = n_distinct(taxid))
+
+# summary for detection by phylum
+syncom_detect_default_genus_sum <- syncom_detect_df %>% 
+  filter(taxclass == "mp4") %>% 
+  group_by(Phylum, Genus,  detect) %>% 
+  summarize(n = n(), # of all 10 reps
+            n_taxid = n_distinct(taxid)) %>% 
+  filter(is.na(detect))
+
+ 
+
+syncom_species_avg_calc <- syncom_detect_df %>% 
+  filter(!is.na(seq_id) & 
+           taxclass == "mp4") %>% 
+  # for each taxon
+  # here seq_id, taxid, and Species are all ways to get to the species level 
+  group_by(seq_id, taxid, Species) %>%
+  mutate(
+    #smaller rmse means closer to expected
+    rmse = sqrt(mean((rep_ra - true_ra)^2)),
+    avg_log_odds = mean(log((rep_ra/true_ra),base =2), na.rm = T),
+    sd_log_odds = sd(log((rep_ra/true_ra),base =2), na.rm = T),
+    se_log_odds = sd_log_odds/sqrt(10)
+    ) %>% 
+  ungroup() %>% 
+  distinct(seq_id, taxid, Phylum, Species, 
+           rmse, avg_log_odds, sd_log_odds, se_log_odds)
+```
+
+```{r Fig1A_syncom_detect_fruit, fig.width=10, fig.height=10, fig.cap="Neighbor joining phylogenetic tree featuring 150 human gut-derived commensal isolates constructed from genomic ANI distances. Root mean squared error of relative abundance (RA) estimates aligned for each species."}
+syncom_detect_fruit <- syncom_species_avg_calc %>% 
+  select(seq_id, taxid, rmse) %>% 
+  left_join(tax_key) %>% 
+  select(species_lab,  rmse, fruit_phy=Phylum) 
+
+phy_tree +
+  new_scale_fill()+ # new scale
+  geom_fruit( # add heatmap
+    data = syncom_detect_fruit,
+    geom = geom_col,
+    mapping = aes(
+                  y=species_lab,
+                  x=rmse,
+                  fill=fruit_phy
+                   ),
+    offset = 0.65,
+    pwidth = 0.3,
+    color = "black",
+    axis.params = list(
+                           axis = 'xy',
+                           text.size = 2,
+                           nbreak = 3, 
+                           text.angle = 270, 
+                           vjust = 1, 
+                           hjust = 0,
+                           limits = c(0, 1)
+                        ), 
+    show.legend = FALSE
+    )+
+  # colors for STs
+  scale_fill_manual(
+    values = phylum_cols
+  )+
+  theme(
+    legend.position = "none"
+  ) -> syncom_fruit_tree_p
+
+syncom_fruit_tree_p+
+  labs(tag = "Fig 1A")+
+  tag_theme()
+
+```
+
+```{r S2B_mp_FP, fig.width=10, fig.height = 5, fig.cap="False positive species level taxa reported from MetaPhlAn4 using default stat_q (0.20) with the 150-member bacterial synthetic community. Species ordered by decreasing average RA for species with RA over 0.1%."}
+FP_detect_mp <- syncom_detect_df %>% 
+  ungroup() %>% 
+  mutate(rep = as.numeric(rep)) %>% 
+  filter(taxclass == "mp4") %>% 
+  filter(FP > 0 & # must be a FP taxon
+           taxid != -1 # not an UNCLASSIFIED
+         ) %>% 
+  distinct(rep, taxid, taxclass, FP) %>% 
+  left_join(mp_syncom_tax_df %>% 
+              filter(relative_abundance > 0) %>% 
+              select(rep = seq_id, taxid, min_taxid, 
+                     species_lab, Species,
+                     rep_pctseqs = pctseqs)) %>% 
+  group_by(taxid, Species, taxclass) %>% 
+  summarize(
+    n_FP = n_distinct(rep),
+    mean_pctseq = mean(rep_pctseqs, na.rm = T),
+    sd_pctseq = sd(rep_pctseqs, na.rm = T), 
+    median_pctseq = median(rep_pctseqs, na.rm = T),
+    IQR_pctseq = IQR(rep_pctseqs, na.rm = T),
+    .groups = "drop"
+  ) %>% 
+  mutate(se_pctseq = (sd_pctseq/sqrt(n_FP)),
+         Species = paste0("*", Species, "*"))
+
+
+mp_fp_p <- FP_detect_mp %>% 
+  arrange(desc(mean_pctseq)) %>% 
+  filter(mean_pctseq >= 0.001) %>%  # 0.1% filter
+  mutate(Species = factor(Species, levels = Species)) %>% 
+  ggplot(aes(x=Species, y = mean_pctseq*100))+
+  geom_bar(
+    stat="identity",
+    color = "black"
+  )+
+  scale_y_continuous(
+    expand = expansion(c(0.001, 0.1)),
+    breaks = c(0, 0.4,0.8, 1.2, 1.6, 2, 2.4)
+  )+
+  labs(
+    title = "MetaPhlAn4 False Positives",
+    x = "",
+    y = "Average RA (%)"
+  )+
+  theme_bw()+
+  theme(
+    axis.text.x = element_markdown(angle = 90, 
+                                   size = 5,
+                                   hjust=1, 
+                                   vjust = 0.5)
+  )
+
+mp_fp_p+
+  labs(tag = "Fig S2")+
+  tag_theme()
+
+```
+
+```{r Fig1B_syncom_spikein, fig.width = 7, fig.height=4, fig.cap = "Reported mean relative abundance of *C. difficile* by each classifier for representative *C. difficile* isolates at varying levels of spike in *C. difficile* reads (1,000 to 50,000). Error bars report the standard error from the mean. Dotted line represents the target relative abundance."}
+# grab all metadata needed and align to the cdiff info for the syncom spike in
+
+spikein_runs <-  mp_spikein_tax_df %>%
+  distinct(seq_id, exp_run, bg_community, assembly_accession, n_reads, rep) %>%
+  left_join(cdc_meta %>%
+    select(assembly_accession, strain, MLST = mlst, mlst_clade)) %>%
+  replace_na(list(
+    strain = "control",
+    MLST = ""
+  )) %>%
+  mutate(
+    exp_run = str_replace(exp_run, "syn-control_statq_0.20_150", "syn-control")
+  ) %>%
+  distinct()
+
+# need to reformat mp data to match patterns
+mp_spikein_tax_df <- mp_spikein_tax_df %>%
+  mutate(
+    bg_community = str_replace(bg_community, "dfi|syn", "DFI.150"),
+    assembly_accession = str_replace(assembly_accession, "syn", "control"),
+    seq_id = paste2(
+      bg_community, assembly_accession, n_reads, rep,
+      sep = "-"
+    )
+  )
+
+# filtered for the cdiff taxon
+cdiff_spikein_df <- mp_spikein_tax_df %>% 
+  mutate(taxclass = "mp4") %>% 
+  filter(taxid == 1496) %>% 
+  mutate(
+    exp_run = str_replace(exp_run, "syn-control_statq_0.20_150", "syn-control"),
+    assembly_accession= str_replace(assembly_accession, "syn", "control"),
+    bg_community = str_replace(bg_community, "dfi", "DFI.150")) %>% 
+  select(seq_id, exp_run, taxclass,
+          bg_community, assembly_accession, n_reads, rep,
+         taxid, min_taxid, Species, species_lab,
+         relative_abundance)
+  
+
+# rejoin to the main dataset, since some runs did not detect cdiff
+spikein_df <- spikein_runs %>% 
+  full_join(
+    (cdiff_spikein_df) %>% 
+      select(-n_reads)) %>% 
+  distinct() %>% 
+  replace_na(list(
+    taxid = 1496,
+    min_taxid = 1496,
+    Species = "Clostridioides difficile",
+    species_lab="Clostridioides difficile"
+  )) %>% 
+  ungroup()
+
+# summary
+spikein_sum <- spikein_df %>% 
+     group_by(taxclass, n_reads,exp_run, rep) %>% 
+     summarize(n = n_distinct(seq_id))
+
+
+# order samples
+samp_ord <-c("control", cdc_meta$strain)
+
+spikein_pile <- data.frame(
+  strain = rep(samp_ord, 4),
+  n_reads = c(c(0,rep(1000, 30)),
+              c(0,rep(5000, 30)),
+              c(0,rep(10000, 30)),
+              c(0,rep(50000, 30))),
+  spike_reads = c(rep(1000, 31),
+                  rep(5000, 31),
+                  rep(10000, 31),
+                  rep(50000, 31)),
+  taxclass =rep("mp4", 31*4)
+  )
+
+
+#average detection of spikein over 10 interations
+avg_spikein_df <- spikein_df %>% 
+  group_by(strain, n_reads, taxclass) %>% 
+  summarize(
+    cdiff_n = n(), # number of samples with cdiff 
+    mean = mean(relative_abundance),
+    sd = sd(relative_abundance),
+    se = sd / sqrt(cdiff_n)
+            )  %>% 
+  filter(!is.na(mean))  %>% 
+  right_join(spikein_pile) %>% 
+  mutate(
+    target = case_when(
+                spike_reads == 1000 ~ (1000/(7.5e6+1000))*100,
+                spike_reads == 5000 ~ (5000/(7.5e6+5000))*100,
+                spike_reads == 10000 ~ (10000/(7.5e6+10000))*100,
+                spike_reads == 50000 ~ (50000/(7.5e6+50000))*100,
+                .default = 0
+              )
+  )  %>% 
+  left_join(cdc_meta %>% select(strain, MLST=mlst, mlst_clade))%>% 
+  replace_na(list(cdiff_n = 0,
+                  mean = 0,
+                  MLST = "")) %>% 
+  ungroup()
+
+mp_avg_p <- avg_spikein_df %>% 
+    ungroup() %>% 
+    mutate(
+        strain = factor(strain, 
+                        levels = samp_ord),
+        taxclass = factor(taxclass, labels = c("MetaPhlAn4"))
+    ) %>% 
+  arrange(strain) %>% 
+  filter(taxclass == "MetaPhlAn4") %>% 
+  mutate(label = ifelse(strain != "control", paste0(strain, " (",MLST ,")"), "control")) %>% 
+  mutate(label = factor(label,
+                        levels = unique(label)),
+         spike_lab = factor(
+           as.character(spike_reads),
+              levels=c("1000", "5000", "10000", "50000"), 
+              labels = c("1,000 reads", "5,000 reads",
+                         "10,000 reads", "50,000 reads"))) %>% 
+    ggplot(aes(x = label, y = mean, fill = taxclass)) +
+    geom_errorbar(
+        aes(ymin = mean - se, ymax = mean + se),
+        color = "black",
+        width = 0.2,   # Adjust error bar width if needed
+        position = position_dodge(width = 0.8)   # Use dodge for correct alignment with bars
+    ) +
+    geom_bar(
+        stat = "identity",
+        position = "dodge",
+        color = "black"
+    ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0.01,0.1))
+  )+
+    geom_hline(
+        aes(yintercept = target, group = spike_lab),  # Specify group for geom_line()
+        linetype = "dashed", 
+        color = "black"
+    ) +
+    labs(
+        y = "*C. difficile* RA (%)",
+        x = ""
+    ) +
+    scale_fill_manual(
+        values = c(
+          "MetaPhlAn4" = "#417447"
+        )
+    )+
+  sophie_theme()+
+    theme(
+        axis.text.x = element_text(angle = 90, 
+hjust = 1),
+        legend.position = "none"
+    )
+
+mp_avg_p_squat_all <- mp_avg_p+
+    facet_wrap(. ~ spike_lab, 
+               scales = "free_y",
+               ncol = 2) 
+
+mp_avg_p_squat_all +
+  labs(tag="Fig 1B") +
+  tag_theme()
+
+```
+
+## Optimization of *C. difficile* detection by MetaPhlAn4
+
+```{r Fig2A_statq_mp_runs, fig.width=4, fig.height = 8, fig.cap = "Reported RA of *C. difficile* for representative isolates of *C. difficile* (n = 30) across various stat_q parameters (0.0-0.20). Black dashed line represents the target RA for 1,000 *C. difficile* reads (0.0133%)."}
+syncom_statq_opt <- bind_rows(
+  total_mp_tax_list$syncontrol_tax_df,
+  total_mp_tax_list$cdiff_1k_tax_df,
+  total_mp_tax_list$cdiff_1k_local_tax_df) %>% 
+  mutate(sep_col = seq_id) %>% 
+  separate(
+    sep_col,
+    sep = "-",
+    into = c("assembly_accession", "statq", "rep")) %>% 
+  mutate(rep = as.numeric(rep),
+         n_reads = as.numeric(spikein),
+         assembly_accession = ifelse(n_reads == 0, 
+            "control", assembly_accession) ,
+         #statq = ifelse(mp_db == "local", "statq_0.05", statq),
+         statq = factor(statq,
+                        levels = sort(unique(statq)))
+    ) %>% 
+  # currently the spikeins do not have iterations so remove when the iterations are done
+  filter(grepl("-01$", seq_id))
+
+
+
+# pull out the cdiff detection
+cdiff_statq_opt <- syncom_statq_opt %>% 
+  filter(taxid == 1496)
+
+
+syncom_statq_opt_meta <- syncom_statq_opt %>% 
+  distinct(seq_id,assembly_accession, mp_db, statq, rep, n_reads) %>%
+  left_join(spikein_runs %>% 
+              distinct(assembly_accession, strain, MLST, mlst_clade))
+  
+
+# add to the spikein meta
+statq_opt_df <- syncom_statq_opt_meta %>% 
+  filter(n_reads <= 1000) %>% 
+  select(-seq_id) %>% 
+  left_join(cdiff_statq_opt %>% 
+              select( -"Kingdom", -"Phylum", -"Class",
+                      -"Order", -"Family", -"Genus",
+                      -min_taxid,-min_tax_lvl, -spikein))%>%
+  # fill in missing data that was undetected for cdiff
+  replace_na(list(
+    pct_seqs =0,
+    relative_abundance = 0,
+    taxid = 1496,
+    min_taxid = 1496,
+    Species = "Clostridioides difficile",
+    species_lab="Clostridioides difficile"
+  )) 
+
+# summary
+statq_opt_sum <- statq_opt_df %>% 
+     group_by(strain, mp_db, statq, n_reads, rep) %>% 
+     summarize(n = n_distinct(seq_id))
+
+
+#average detection of spikein over 10 interations
+
+
+# undershooting bc including all of the zeros
+
+
+statq_opt_avg_df <- statq_opt_df %>% 
+  group_by(strain, n_reads, mp_db, statq) %>% 
+  summarize(
+    cdiff_n = n(), # number of samples with cdiff 
+    mean = mean(relative_abundance),
+    sd = sd(relative_abundance),
+    se = sd / sqrt(cdiff_n)
+            )  %>% 
+  filter(!is.na(mean))  %>% 
+  left_join(statq_opt_df %>% distinct(strain, MLST, mlst_clade))%>% 
+  ungroup()
+
+# pick 2 rep strains since all 30 is hard to interpret
+statq_ord = c("statq_0.00", 
+              #"statq_0.01", "statq_0.02", "statq_0.03","statq_0.04",
+              "statq_0.05", 
+              #"statq_0.06", "statq_0.07","statq_0.08", "statq_0.09",
+              "statq_0.10", 
+              #"statq_0.11", "statq_0.12", "statq_0.13", "statq_0.14", 
+              "statq_0.15",
+              #"statq_0.16", "statq_0.17",
+              "statq_0.20")
+
+
+
+statq_opt_p <- statq_opt_avg_df %>%
+    ungroup() %>%
+    mutate(
+        strain = factor(strain,
+                        levels = samp_ord),
+        statq = factor(
+          statq,
+          levels = statq_ord,
+          labels = str_remove(statq_ord, "statq_"))
+    ) %>%
+  arrange(strain) %>%
+  filter(#strain %in% rep_samp &
+           mp_db == "default") %>%
+  filter(!is.na(statq)) %>%
+  mutate(label = ifelse(strain != "control",
+                        paste0(strain, " (",MLST ,")"), "control")) %>%
+  mutate(label = factor(label,
+                        levels = unique(label)),
+         spike_lab = factor(
+           as.character(n_reads),
+              levels=c("0","1000", "5000", "10000", "50000"),
+              labels = c("1,000 reads", "1,000 reads","5,000 reads",
+                         "10,000 reads", "50,000 reads"))) %>%
+    ggplot(aes(x = label, y = mean)) +
+    geom_bar(
+        stat = "identity",
+        position = "dodge",
+        color = "black",
+        fill = "#417447"
+    ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0.01,0.1))
+  )+
+  geom_hline(
+    yintercept = (1000 / (7.5e6 + 1000)) * 100,
+    linetype = "dashed",
+    color = "black"
+  ) +
+    labs(
+        y = "*C. difficile* RA (%)",
+        x = ""
+    ) +
+  sophie_theme()+
+    theme(
+        axis.text.x = element_text(angle = 90,
+hjust = 1),
+        legend.position = "none"
+    )
+
+statq_opt_p+
+  facet_wrap(. ~ statq,
+              # scales = "free_y",
+               nrow = 5) -> statq_opt_p
+
+statq_opt_p+
+  labs(tag = "Fig 2A")+
+  tag_theme()
+```
+
+```{r Fig2B_globalvlocal, fig.height= 2.5, fig.width=6, fig.cap = "Reported RA of *C. difficile* for representative isolates of *C. difficile* (n = 30) between global stat_q adjustment (0.05) and local stat_q adjustment (0.05). Black dashed line represents the target RA for 1,000 *C. difficile* reads (0.0133%)."}
+# compare cdiff detection at statq 0.05
+statq_avg <- statq_opt_avg_df %>% 
+  filter(statq == "statq_0.05")
+
+globalvlocal_p <- statq_avg %>%
+    ungroup() %>%
+    mutate(
+        strain = factor(strain,
+                        levels = samp_ord),
+        statq = factor(
+          statq,
+          levels = statq_ord,
+          labels = str_remove(statq_ord, "statq_"))
+    ) %>%
+  arrange(strain) %>%
+  filter(!is.na(statq)) %>%
+  mutate(label = ifelse(strain != "control",
+                        paste0(strain, " (",MLST ,")"), "control")) %>%
+  mutate(label = factor(label,
+                        levels = unique(label)),
+         spike_lab = factor(
+           as.character(n_reads),
+              levels=c("0","1000", "5000", "10000", "50000"),
+              labels = c("1,000 reads", "1,000 reads","5,000 reads",
+                         "10,000 reads", "50,000 reads")),
+         mp_db = factor(mp_db,
+                        levels = c("default", "local"),
+                        labels = c("global 0.05", "local 0.05"))) %>%
+    ggplot(aes(x = label, y = mean)) +
+    geom_bar(
+      aes(fill=mp_db),
+        stat = "identity",
+        position = "dodge",
+        color = "black"
+    ) +
+  scale_fill_manual(
+    values=c("global 0.05" = tax_class_cols[["Metaphlan4_statq_0.05"]],
+            "local 0.05" = tax_class_cols[["Metaphlan4_local_statq_0.05"]])
+  )+
+  scale_y_continuous(
+    expand = expansion(mult = c(0.01,0.1))
+  )+
+  geom_hline(
+    yintercept = (1000 / (7.5e6 + 1000)) * 100,
+    linetype = "dashed",
+    color = "black"
+  ) +
+    labs(
+        y = "*C. difficile* RA (%)",
+        x = ""
+    ) +
+  sophie_theme()+
+    theme(
+        axis.text.x = element_text(angle = 90,
+hjust = 1),
+        legend.position = "none"
+    )
+
+globalvlocal_p+
+  facet_wrap(. ~ mp_db,
+               nrow = 1)-> globalvlocal_p
+
+globalvlocal_p+
+  labs(tag = "Fig 2B")+
+  tag_theme()
+
+
+
+```
+
+```{r Fig2D_mg_db_fix, fig.width=6, fig.height =2.5, fig.cap = "Mean RA of ST-11 strains (pink) compared to the mean RA of the remaining 28 strains (white) for 1,000-50,000 reads."}
+
+mg_db_fix_df <- bind_rows(
+  total_mp_tax_list$cdiff_1k_tax_df,
+  total_mp_tax_list$cdiff_1k_v1_tax_df,
+  total_mp_tax_list$cdiff_1k_v2_tax_df,
+  total_mp_tax_list$cdiff_1k_v3_tax_df) %>% 
+  mutate(sep_col = seq_id) %>% 
+  separate(
+    sep_col,
+    sep = "-",
+    into = c("assembly_accession", "statq", "rep")) %>% 
+  mutate(rep = as.numeric(rep),
+         n_reads = as.numeric(spikein),
+         assembly_accession = ifelse(n_reads == 0, 
+            "control", assembly_accession) ,
+         statq = factor(statq,
+                        levels = sort(unique(statq)))
+    ) %>% 
+  filter(grepl("-01$", seq_id))
+
+
+
+# pull out the cdiff detection
+cdiff_mg_db <- mg_db_fix_df  %>% 
+  filter(taxid == 1496)
+
+
+mg_db_fix_meta <- mg_db_fix_df %>% 
+  distinct(seq_id,assembly_accession, mp_db, statq, rep, n_reads) %>%
+  left_join(spikein_runs %>% 
+              distinct(assembly_accession, strain, MLST, mlst_clade))
+  
+
+# add to the spikein meta
+mg_db_fix <- mg_db_fix_meta %>% 
+  filter(n_reads <= 1000) %>% 
+  select(-seq_id) %>% 
+  left_join(cdiff_mg_db %>% 
+              select( -"Kingdom", -"Phylum", -"Class",
+                      -"Order", -"Family", -"Genus",
+                      -min_taxid,-min_tax_lvl, -spikein))%>%
+  replace_na(list(
+    pct_seqs =0,
+    relative_abundance = 0,
+    taxid = 1496,
+    min_taxid = 1496,
+    Species = "Clostridioides difficile",
+    species_lab="Clostridioides difficile"
+  )) 
+
+# summary
+mg_db_fix_sum <- mg_db_fix %>% 
+     group_by(strain, mp_db, statq, n_reads, rep) %>% 
+     summarize(n = n_distinct(seq_id))
+
+
+#average detection of spikein over 10 interations
+
+
+# undershooting bc including all of the zeros
+
+
+mg_db_fix_avg_df <- mg_db_fix%>% 
+  mutate(group = ifelse(MLST == "ST11", "ST11", "other")) %>% 
+  group_by(group, n_reads, mp_db, statq) %>% 
+  summarize(
+    cdiff_n = n(), # number of samples with cdiff 
+    mean = mean(relative_abundance),
+    sd = sd(relative_abundance),
+    se = sd / sqrt(cdiff_n)
+            )  %>% 
+  filter(!is.na(mean))  %>% 
+  ungroup()
+
+mg_db_fix_avg_df %>% 
+  filter(statq == "statq_0.05" & n_reads == 1000) %>% 
+  mutate(statq = factor(
+          statq,
+          levels = statq_ord,
+          labels = str_remove(statq_ord, "statq_"))) %>% 
+  ggplot(aes(x= mp_db, y = mean))+
+  geom_bar(
+    aes(fill = group),
+    stat = "identity",
+    position = position_dodge(width = 0.8),
+    color = "black"
+    )+
+  scale_y_continuous(expand = expansion(c(0.01, 0.1)))+
+    labs(
+        y = "mean *C. difficile* RA (%)",
+        x = ""
+    ) +
+  scale_fill_manual(
+    values= c("#20B2AA", "#B22222")
+  )+
+  geom_errorbar(
+        aes(ymin = mean - se, ymax = mean + se, group = group),
+        color = "black",
+        width = 0.2,   # Adjust error bar width if needed
+        position = position_dodge(width = 0.8)   # Use dodge for correct alignment with bars
+    ) +
+  geom_hline(
+    yintercept = (1000 / (7.5e6 + 1000)) * 100,
+    linetype = "dashed",
+    color = "black"
+  ) +
+  ggpubr::geom_pwc(
+    tip.length = 0.1,
+    method = "wilcox_test",
+    label = "{p.adj.signif}",
+    p.adjust.method = "BH",
+    label.size = 5 / ggplot2::.pt,
+    bracket.nudge.y = 0.1,  # A smaller nudge
+      y.position = c(0.9, 1),
+    hide.ns = TRUE
+  ) +
+  facet_wrap(.~ statq, ncol = 1)+
+  sophie_theme()-> mg_db_fix_p
+
+mg_db_fix_p+
+  labs(tag= "Fig 2D")+
+  tag_theme()
+
+```
+
+```{r S2A_statq_mp_runs_all, fig.width = 12, fig.height=6, fig.cap = "Reported RA of *C. difficile* for 30 isolates of *C. difficile* across various global stat_q parameters (0.0-0.20). Black line represents the target RA of *C. difficile* for 1,000 to 50,000 reads."}
+syncom_statq_opt_tot <- bind_rows(
+  total_mp_tax_list$syncontrol_tax_df,
+  total_mp_tax_list$cdiff_1k_tax_df,
+  total_mp_tax_list$cdiff_5k_tax_df,
+  total_mp_tax_list$cdiff_10k_tax_df,
+  total_mp_tax_list$cdiff_50k_tax_df
+  ) %>% 
+  mutate(sep_col = seq_id) %>% 
+  separate(
+    sep_col,
+    sep = "-",
+    into = c("assembly_accession", "statq", "rep")) %>% 
+  mutate(rep = as.numeric(rep),
+         n_reads = as.numeric(spikein),
+         assembly_accession = ifelse(n_reads == 0, 
+            "control", assembly_accession) ,
+         statq = factor(statq,
+                        levels = sort(unique(statq)))
+    ) %>% 
+  filter(grepl("-01$", seq_id))
+
+
+
+# pull out the cdiff detection
+cdiff_statq_opt_tot <- syncom_statq_opt_tot %>% 
+  filter(taxid == 1496)
+
+
+syncom_statq_opt_meta_tot <- syncom_statq_opt_tot %>% 
+  distinct(seq_id,assembly_accession, mp_db, statq, rep, n_reads) %>%
+  left_join(spikein_runs %>% 
+              distinct(assembly_accession, strain, MLST, mlst_clade))
+
+# add to the spikein meta
+statq_opt_tot_df <- syncom_statq_opt_meta_tot %>% 
+  select(-seq_id) %>% 
+  left_join(cdiff_statq_opt_tot %>% 
+              select( -"Kingdom", -"Phylum", -"Class",
+                      -"Order", -"Family", -"Genus",
+                      -min_taxid,-min_tax_lvl, -spikein))%>%
+  # fill in missing data that was undetected for cdiff
+  replace_na(list(
+    pct_seqs =0,
+    relative_abundance = 0,
+    taxid = 1496,
+    min_taxid = 1496,
+    Species = "Clostridioides difficile",
+    species_lab="Clostridioides difficile"
+  )) 
+
+# summary
+statq_opt_tot_sum <- statq_opt_tot_df %>% 
+     group_by(strain, mp_db, statq, n_reads, rep) %>% 
+     summarize(n = n_distinct(seq_id))
+
+
+statq_opt_tot_avg_df <- statq_opt_tot_df %>% 
+  group_by(strain, n_reads, mp_db, statq) %>% 
+  summarize(
+    cdiff_n = n(), # number of samples with cdiff 
+    mean = mean(relative_abundance),
+    sd = sd(relative_abundance),
+    se = sd / sqrt(cdiff_n)
+            )  %>% 
+  filter(!is.na(mean))  %>% 
+  left_join(statq_opt_tot_df %>% distinct(strain, MLST, mlst_clade))%>% 
+  ungroup() %>% 
+  mutate(
+    target = case_when(
+                n_reads == 1000 ~ (1000/(7.5e6+1000))*100,
+                n_reads == 5000 ~ (5000/(7.5e6+5000))*100,
+                n_reads == 10000 ~ (10000/(7.5e6+10000))*100,
+                n_reads == 50000 ~ (50000/(7.5e6+50000))*100,
+                .default = 0
+              )
+  )
+
+# pick 2 rep strains since all 30 is hard to interpret
+statq_ord = c("statq_0.00", 
+              #"statq_0.01", "statq_0.02", "statq_0.03","statq_0.04",
+              "statq_0.05", 
+              #"statq_0.06", "statq_0.07","statq_0.08", "statq_0.09",
+              "statq_0.10", 
+              #"statq_0.11", "statq_0.12", "statq_0.13", "statq_0.14", 
+              "statq_0.15",
+              #"statq_0.16", "statq_0.17",
+              "statq_0.20")
+
+
+
+statq_opt_tot_p <- statq_opt_tot_avg_df %>%
+    ungroup() %>%
+    mutate(
+        strain = factor(strain,
+                        levels = samp_ord),
+        statq = factor(
+          statq,
+          levels = statq_ord,
+          labels = str_remove(statq_ord, "statq_"))
+    ) %>%
+  arrange(strain) %>%
+  filter(#strain %in% rep_samp &
+           mp_db == "default") %>%
+  filter(!is.na(statq)) %>%
+  mutate(label = ifelse(strain != "control",
+                        paste0(strain, " (",MLST ,")"), "control")) %>%
+  mutate(label = factor(label,
+                        levels = unique(label)),
+         spike_lab = factor(
+           as.character(n_reads),
+              levels=c("0","1000", "5000", "10000", "50000"),
+              labels = c("1,000 reads", "1,000 reads","5,000 reads",
+                         "10,000 reads", "50,000 reads"))) %>%
+    ggplot(aes(x = label, y = mean)) +
+    geom_bar(
+        stat = "identity",
+        position = "dodge",
+        color = "black",
+        fill = "#417447"
+    ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0.01,0.1))
+  )+
+   geom_hline(
+        aes(yintercept = target, group = spike_lab),  # Specify group for geom_line()
+        linetype = "dashed", 
+        color = "black"
+    ) +
+    labs(
+        y = "*C. difficile* RA (%)",
+        x = ""
+    ) +
+  sophie_theme()+
+    theme(
+        axis.text.x = element_text(angle = 90,
+hjust = 1),
+        legend.position = "none"
+    )
+
+statq_opt_tot_p+
+  facet_grid(cols = vars(statq),
+             rows = vars(spike_lab),
+             scales = "free_y") -> statq_opt_tot_p
+
+statq_opt_tot_p+
+  labs(tag = "Fig S2A")+
+  tag_theme()
+```
+
+```{r S2CDE_syncom_performance_statq, fig.width = 10, fig.height= 3, fig.cap = "Binary classification performance of the synthetic metagenomic samples (n=10) between default stat_q (0.20), global stat_q (0.05), and local stat_q (0.05) measured for the purity of the taxonomic profile (S2C) and completeness of the taxonomic profile (S2D). (S2E) L1 norm error, the total error between the true and predicted abundances of each species, of the synthetic metagenomic samples (n=10) between default stat_q (0.20), global stat_q (0.05), and local stat_q (0.05)."}
+syncom_spike_default <- mp_syncom_tax_df %>% 
+              filter(relative_abundance > 0) %>% 
+              select(rep = seq_id, 
+                     taxid, # join with taxid (species level)
+                     min_taxid, # most defined taxid
+                     species_lab, # orginal annotation by tool
+                     rep_ra = relative_abundance) %>% 
+  mutate(rep = as.numeric(rep)) %>% 
+  full_join(syncom_runs %>% 
+              select(seq_id, taxid, rep,
+                     "Kingdom", "Phylum", "Class", 
+                     "Order", "Family", "Genus", "Species",
+                     true_ra = "relative_abundance")
+            ) %>% 
+  mutate(taxclass = "mp_0.20") %>% 
+  # per taxid and rep, if the taxa is detected
+  group_by(taxid, rep) %>% 
+  mutate(detect = ifelse(rep_ra > 0, T, F)) %>% 
+  ungroup()%>% 
+  distinct(seq_id, taxid, rep, .keep_all = TRUE)
+
+syncom_spike_global <- mp_syncom_stat_0.05_tax_df %>% 
+              filter(relative_abundance > 0) %>% 
+              select(rep = seq_id, 
+                     taxid, # join with taxid (species level)
+                     min_taxid, # most defined taxid
+                     species_lab, # orginal annotation by tool
+                     rep_ra = relative_abundance) %>% 
+  mutate(rep = as.numeric(rep)) %>% 
+  full_join(syncom_runs %>% 
+              select(seq_id, taxid, rep,
+                     "Kingdom", "Phylum", "Class", 
+                     "Order", "Family", "Genus", "Species",
+                     true_ra = "relative_abundance")
+            ) %>% 
+  mutate(taxclass = "mp_0.05") %>% 
+  # per taxid and rep, if the taxa is detected
+  group_by(taxid, rep) %>% 
+  mutate(detect = ifelse(rep_ra > 0, T, F)) %>% 
+  ungroup()%>% 
+  distinct(seq_id, taxid, rep, .keep_all = TRUE)
+
+syncom_spike_local<- mp_local_syncom_tax_df %>% 
+              filter(relative_abundance > 0) %>% 
+              select(rep = seq_id, 
+                     taxid, # join with taxid (species level)
+                     min_taxid, # most defined taxid
+                     species_lab, # orginal annotation by tool
+                     rep_ra = relative_abundance) %>% 
+  mutate(rep = as.numeric(rep)) %>% 
+  full_join(syncom_runs %>% 
+              select(seq_id, taxid, rep,
+                     "Kingdom", "Phylum", "Class", 
+                     "Order", "Family", "Genus", "Species",
+                     true_ra = "relative_abundance")
+            ) %>% 
+  mutate(taxclass = "mp_0.05_local") %>% 
+  # per taxid and rep, if the taxa is detected
+  group_by(taxid, rep) %>% 
+  mutate(detect = ifelse(rep_ra > 0, T, F)) %>% 
+  ungroup()%>% 
+  distinct(seq_id, taxid, rep, .keep_all = TRUE)
+
+
+
+syncom_spike_detect_df <- bind_rows(
+  (syncom_spike_default %>% 
+  select(seq_id, taxid, Phylum,Species, 
+         taxclass, rep, detect, rep_ra,true_ra)),
+    (syncom_spike_global %>% 
+  select(seq_id, taxid,Phylum, Species, 
+         taxclass, rep, detect,rep_ra,true_ra)),
+      (syncom_spike_local %>% 
+  select(seq_id, taxid, Phylum,Species, 
+         taxclass, rep, detect,rep_ra, true_ra))
+  )%>% 
+  # if na for these, they were wrong
+  replace_na(list(true_ra = 0,
+                  rep_ra = 0)) %>% 
+  # calculation per sample per taxclass setting
+  # here rep=sample and seq_id is the taxa genome
+  group_by(rep, taxclass) %>% 
+  mutate(
+    l1_norm = sum(abs(true_ra-rep_ra)),
+    TP =  length(intersect(supp(true_ra), supp(rep_ra))),  # see cami supplement
+    FP = length(intersect(supp_c(true_ra), supp(rep_ra))),
+    FN = length(intersect(supp(true_ra), supp_c(rep_ra))),
+    # overall profile
+    purity = (TP/(TP+FP)),
+    recall = (TP/(TP+FN))
+  ) %>% 
+  ungroup()
+
+TP_mp_default = syncom_spike_detect_df %>% 
+  filter(taxclass == "mp_0.20") %>% 
+  filter(detect == TRUE & true_ra > 0) %>% 
+  distinct(taxid, Species)
+
+TP_mp_global = syncom_spike_detect_df %>% 
+  filter(taxclass == "mp_0.05") %>% 
+  filter(detect == TRUE & true_ra > 0) %>% 
+  distinct(taxid, Species)
+
+TP_mp_local = syncom_spike_detect_df %>% 
+  filter(taxclass == "mp_0.05_local") %>% 
+  filter(detect == TRUE & true_ra > 0) %>% 
+  distinct(taxid, Species)
+
+setdiff(TP_mp_global$Species, TP_mp_default$Species)
+setdiff(TP_mp_global$Species, TP_mp_local$Species)
+setdiff(TP_mp_default$Species, TP_mp_local$Species)
+
+## plot ------
+syncom_spike_detect_df %>%
+    select(taxclass, rep, TP, FP, FN) %>%
+    pivot_longer(
+        c(TP:FN),
+        names_to = "metric_type",
+        values_to = "n_metric"
+    ) %>%
+    distinct() %>%
+    group_by(taxclass, metric_type) %>%
+    summarize(
+        mean_metric = mean(n_metric),
+        sd_metric = sd(n_metric),
+        se_metric = sd_metric / sqrt(10),
+        .groups = "drop"
+    ) %>%
+    mutate(taxclass = factor(
+        taxclass,
+        levels = c("mp_0.20", "mp_0.05", "mp_0.05_local"),
+        labels = c("default", "global", "local")
+    )) %>%
+    ggplot(aes(x = metric_type, y = mean_metric, fill = taxclass)) +
+    geom_bar(
+        stat = "identity",
+        position = position_dodge2(preserve = "single"),
+        color = "black"
+    ) +
+    geom_errorbar(
+        aes(
+            ymin = mean_metric - se_metric,
+            ymax = mean_metric + se_metric
+        ),
+        #width = 0.2,  # thickness of error bars
+        position = position_dodge2(preserve = "single"),
+        color = "black"
+    ) +
+    scale_y_continuous(
+        expand = expansion(c(0.01, 0.1))
+    ) +
+    scale_fill_manual(
+        values = c(
+            tax_class_cols[["Metaphlan4_default"]],
+            tax_class_cols[["Metaphlan4_statq_0.05"]],
+            tax_class_cols[["Metaphlan4_local_statq_0.05"]]
+        )
+    ) +
+    labs(
+        x = "",
+        y = "N Species"
+    ) +
+    sophie_theme() +
+    theme(
+        aspect.ratio = 1,
+        legend.position = "none"
+    ) -> syncom_metric_bars
+
+
+syncom_spike_detect_df %>% 
+  distinct(taxclass, rep, purity) %>% 
+  mutate(taxclass= factor(taxclass,
+                      levels = c("mp_0.20", "mp_0.05", "mp_0.05_local"),
+                      labels = c("default", "global", "local"))) %>% 
+  ggplot(aes(x=taxclass, y = purity))+
+  geom_jitter(
+    aes(color = taxclass),
+    height = 0,
+    alpha = 0.7)+
+  scale_y_continuous(
+    limits = c(0,1)
+  )+
+  ggpubr::geom_pwc(
+    tip.length = 0.05,
+    method = "wilcox_test",
+    label = "{p.adj.signif}",
+    label.size = 5/ggplot2::.pt,
+    p.adjust.method = "BH",
+    y.position = c(0.9, 0.95),
+    hide.ns = TRUE
+  )+
+  scale_color_manual(
+     values = c(
+       tax_class_cols[["Metaphlan4_default"]],
+       tax_class_cols[["Metaphlan4_statq_0.05"]],
+        tax_class_cols[["Metaphlan4_local_statq_0.05"]])
+   )+
+  labs(
+    x="" ,
+    y = "Purity"
+  )+
+  sophie_theme()+
+  theme(
+    aspect.ratio = 1,
+    legend.position = "none"
+  )-> syncom_spike_ppv_p
+
+
+syncom_spike_detect_df %>% 
+  distinct(taxclass, rep, recall) %>% 
+  mutate(taxclass= factor(taxclass,
+                      levels = c("mp_0.20", "mp_0.05", "mp_0.05_local"),
+                      labels = c("default", "global", "local"))) %>% 
+  ggplot(aes(x=taxclass, y = recall))+
+  geom_jitter(
+    aes(color = taxclass),
+    height = 0,
+    alpha = 0.7)+
+  scale_y_continuous(
+    limits = c(0,1)
+  )+
+  ggpubr::geom_pwc(
+    tip.length = 0.05,
+    method = "wilcox_test",
+    label = "{p.adj.signif}",
+    label.size = 5/ggplot2::.pt,
+    p.adjust.method = "BH",
+    y.position = c(0.9, 0.95),
+    hide.ns = TRUE
+  )+
+  scale_color_manual(
+     values = c(
+       #"gray30",
+       tax_class_cols[["Metaphlan4_default"]],
+       tax_class_cols[["Metaphlan4_statq_0.05"]],
+        tax_class_cols[["Metaphlan4_local_statq_0.05"]])
+   )+
+  labs(
+    x="" ,
+    y = "Completeness"
+  )+
+  sophie_theme()+
+  theme(
+    aspect.ratio = 1,
+    legend.position = "none"
+  )-> syncom_spike_recall_p
+
+
+syncom_spike_detect_df %>% 
+  distinct(taxclass, rep, l1_norm) %>% 
+  mutate(taxclass= factor(taxclass,
+                      levels = c("mp_0.20", "mp_0.05", "mp_0.05_local"),
+                      labels = c("default", "global", "local"))) %>% 
+  ggplot(aes(x=taxclass, y = l1_norm))+
+  geom_jitter(
+    aes(color = taxclass),
+    height = 0,
+    alpha = 0.7)+
+  scale_y_continuous(
+    limits = c(0,100)
+  )+
+  ggpubr::geom_pwc(
+    tip.length = 0.05,
+    method = "wilcox_test",
+    label = "{p.adj.signif}",
+    label.size = 5/ggplot2::.pt,
+    p.adjust.method = "BH",
+    y.position = c(90, 95),
+    hide.ns = TRUE
+  )+
+  scale_color_manual(
+     values = c(
+       tax_class_cols[["Metaphlan4_default"]],
+       tax_class_cols[["Metaphlan4_statq_0.05"]],
+        tax_class_cols[["Metaphlan4_local_statq_0.05"]])
+   )+
+  labs(
+    x="" ,
+    y = "L1 norm error"
+  )+
+  sophie_theme()+
+  theme(
+    aspect.ratio = 1,
+    legend.position = "none"
+  )-> syncom_spike_l1_norm_p
+
+s2c_p  = syncom_spike_ppv_p+
+  labs(tag = "Fig S2C")+
+  tag_theme()
+
+s2d_p  = syncom_spike_recall_p+
+  labs(tag = "Fig S2D")+
+  tag_theme()
+
+s2e_p = syncom_spike_l1_norm_p+
+  labs(tag = "Fig S2E")+
+  tag_theme()
+
+s2c_p + s2d_p + s2e_p 
+```
+
+```{r syncom_taxclass_phy}
+# the various classifiers have different output species_lab --> artificially looks unique/different
+# use the 
+syncom_taxclass_df <- bind_rows(
+  mp_syncom_tax_df %>%
+    filter(relative_abundance > 0) %>%
+    mutate(taxclass = "mp_0.20"),
+  mp_syncom_stat_0.05_tax_df %>%
+    filter(relative_abundance > 0) %>%
+    mutate(taxclass = "mp_0.05"),
+  mp_local_syncom_tax_df %>%
+    filter(relative_abundance > 0) %>%
+    mutate(taxclass = "mp_0.05_local")
+) %>%
+  mutate(
+    mat_id = paste0(seq_id, "-", taxclass),
+    spec_id = paste0(
+      Kingdom, "|",
+      Phylum, "|",
+      Class, "|",
+      Order, "|",
+      Family, "|",
+      Genus, "|",
+      Species
+    )
+  ) 
+
+length(unique(syncom_taxclass_df$seq_id)) #10
+
+# build a phyloseq to store information
+syncom_taxclass_otu_mat <- syncom_taxclass_df %>% 
+  # species_lab = reported taxa from mp
+  group_by(mat_id, spec_id) %>% 
+  # summarize RA to the NCBI taxlvl information
+  summarize(new_ra = sum(relative_abundance)) %>% 
+  pivot_wider(names_from = mat_id, 
+              values_from = new_ra,
+              values_fill = 0) %>% 
+  column_to_rownames(var = "spec_id") %>% 
+  as.matrix()
+
+dim(syncom_taxclass_otu_mat)
+
+syncom_taxclass_tax_mat <- syncom_taxclass_df %>% 
+  # species_lab = reported taxa from mp
+  select(spec_id, Kingdom, Phylum, Class, Order, Family, Genus, Species) %>% 
+  distinct() %>% 
+  column_to_rownames(var = "spec_id") %>% 
+  as.matrix()
+
+dim(syncom_taxclass_tax_mat)
+
+syncom_taxclass_sam_df <- syncom_taxclass_df %>% 
+  select(sample=mat_id, seq_id, taxclass, seq_id) %>% 
+  distinct() %>% 
+  mutate(
+    taxclass_lab = paste("taxclass", taxclass)
+  ) %>% 
+  column_to_rownames(var = "sample")
+
+syncom_OTU = otu_table(syncom_taxclass_otu_mat, taxa_are_rows = TRUE)
+syncom_TAX = tax_table(syncom_taxclass_tax_mat)
+syncom_SAM = sample_data(syncom_taxclass_sam_df)
+
+syncom_taxclass_phy <- phyloseq(syncom_OTU,syncom_TAX, syncom_SAM)
+
+
+  syncom_taxclass_bray = phyloseq::distance(syncom_taxclass_phy, 
+                                          method = "bray")
+  syncom_taxclass_bray_ord <- ordinate(syncom_taxclass_phy, 
+                                       "NMDS", "bray")
+    ## PERMANOVA
+  syncom_taxclass_bray_PA = adonis2(syncom_taxclass_bray ~ taxclass_lab,
+       data = syncom_taxclass_sam_df,
+       parallel = 4)
+  ## ANOSIM
+  syncom_taxclass_bray_anosim = anosim(
+    syncom_taxclass_bray,
+    syncom_taxclass_sam_df$taxclass_lab,
+      distance = "bray",
+      parallel = 4,
+    permutations = 999
+  )
+  ## dispersion
+  syncom_taxclass_bray_disp <- vegan::betadisper(syncom_taxclass_bray, syncom_taxclass_sam_df$taxclass_lab)
+  
+  permutest(syncom_taxclass_bray_disp)
+
+```
+
+```{r Fig2C_pw_syncom_bray, fig.width = 3, fig.height = 3, fig.cap = "Pairwise Bray-Curtis Dissimilarity of the overall between stat_q adjustment (0.05) and default (0.20)."}
+pw_syncom_bray_df <- biomeUtils::meltDistanceToTable(syncom_taxclass_phy,
+                                syncom_taxclass_bray,
+                  name_dist_column = "bray") %>% 
+  # when the sample is compared to itself 
+  filter((seq_id_S1 == seq_id_S2)) %>% 
+  # these are pairwise so the values are the same in either direction
+  select(seq_id = seq_id_S1, 
+         taxclass_S1, taxclass_S2, bray) %>% 
+  mutate(group = factor(taxclass_S1,
+                      levels = c("mp_0.20", "mp_0.05", "mp_0.05_local"),
+                      labels = c("default", "global", "local")))
+
+pw_syncom_bray_default <-pw_syncom_bray_df %>%  
+  # keep if taxclass_S1 is compared to the default
+  filter(taxclass_S2 == "mp_0.20")
+
+
+pw_syncom_bray_p <- pw_syncom_bray_default %>% 
+  ungroup() %>% 
+  mutate() %>% 
+  ggplot(aes(x= group, y=bray, color=group)) +
+  geom_jitter(
+    height = 0,
+    shape =19,
+    alpha = 0.7)+
+  ggpubr::geom_pwc(
+    tip.length = 0.1,
+    method = "wilcox_test",
+    label = "{p.adj.signif}",
+    p.adjust.method = "BH",
+    label.size = 5/ggplot2::.pt,
+    y.position = c(0.1),
+    hide.ns = TRUE
+  )+
+  scale_y_continuous(
+    expand = expansion(c(0.1,0.1)),
+    limits = c(0, 0.2)
+    )+
+  scale_color_manual(
+     values = c(
+       tax_class_cols[["Metaphlan4_statq_0.05"]],
+        tax_class_cols[["Metaphlan4_local_statq_0.05"]])
+   )+
+  labs(
+    x = "",
+    y = "Bray Curtis<sub>vs. default</sub>"
+  )+
+  sophie_theme()+
+  theme(
+    aspect.ratio = 1,
+    legend.position = "none"
+  )
+
+pw_syncom_bray_p+
+  labs(tag = "Fig 2C") +
+  tag_theme()
+```
+
+```{r S3_cdc30_mg_heat, fig.width = 10, fig.height = 16, fig.cap = " Heatmap of mean marker gene (n=200) coverage of marker genes mapped to 30 CDC curated *C. difficile* isolates using BowTie2 (top) and heatmap of pairwise genomic ANI distances (bottom). Left annotation displays inclusion into 3 sets of marker genes that are non-uniformly represented across the representative genomes."}
+
+MG_db_df <- read.csv(here(data_PATH,"marker_genes_mapping","coverage_control_readlen_150","cdc30_mg_db_2025-03-17.csv")) %>% 
+  select(-X)
+
+# 200 markergenes for Cdiff 
+ref_cdiff_genes_df <- fread(here(data_PATH, "marker_genes_mapping", "coverage_control_readlen_150", "dfi-syn-control.metaphlan_sgb6136_markers_oct22.coverage")) 
+
+ref_cdiff_genes <- ref_cdiff_genes_df %>% 
+  distinct(`#rname`) %>%
+  pull()
+
+## can select other lengths but must adjust the file name 1k, 5k, 10k, 50k
+cdc30_mg_cov_raw <- fread(here(data_PATH, "marker_genes_mapping", "coverage_control_readlen_150", "SS.TAX.012-cdc30_mg_cov_50k_df.tsv"))
+
+cdc30_mg_cov_df <- cdc30_mg_cov_raw %>% 
+  # grab the strain information by matching the genome
+  left_join(cdc_meta %>% 
+    mutate(genoMatchID =
+           case_when(
+             nchar(strain) <6 ~ str_replace(strain, "-", "_0"),
+             .default = str_replace(strain, "-","_")
+           )) %>% 
+              select(genoMatchID, strain, Assembly = assembly_accession), 
+            by="Assembly") %>% 
+  dplyr::rename(label = genoMatchID) %>% 
+  filter(mg_name  %in% ref_cdiff_genes)
+
+
+# numeric matrix of mean coverage
+# rownames are tree labels 
+cdc30_cov_heat <- cdc30_mg_cov_df %>% 
+  select(label, mg_name, coverage) %>% 
+  mutate(label = str_replace(label, "_", "-")) %>% 
+  mutate(coverage = as.numeric(coverage)) %>% 
+  group_by(label, mg_name) %>% 
+  summarize(mean_cov = mean(coverage)) %>% 
+  pivot_wider(
+    names_from = mg_name,
+    values_from = mean_cov,
+    values_fill = 0
+  ) %>% 
+  column_to_rownames(var = "label") %>%
+  as.matrix()
+
+dim(cdc30_cov_heat) # 30strains x 200mg
+
+
+cdc30_ani_mat <- ani %>% 
+  select(key, CDI_01:CDI_30) %>% 
+  filter(grepl("CDI", key)) %>% 
+  mutate(key = str_replace(key, "_", "-")) %>% 
+  column_to_rownames(var = "key") %>% 
+  as.matrix()
+
+colnames(cdc30_ani_mat) <- rownames(cdc30_ani_mat)
+
+dim(cdc30_ani_mat) # 30strains x 30strains
+
+
+## setup ------
+cov_colors = circlize::colorRamp2(c(0, 100), 
+                                   hcl_palette = "Inferno",
+                                  reverse = TRUE)
+
+ani_colors = circlize::colorRamp2(c(.75, 0.95, 1), c("white", "#D0536E", "#b32241"))
+
+# annot
+annot_df = cdc_meta %>% 
+  select(strain, mlst, mlst_clade) %>% 
+  mutate(genoMatchID = str_replace(strain, "_", "-"))
+# the order of this df is already the same order as the mat rownames
+
+
+MG_db_df = MG_db_df[match(colnames(cdc30_cov_heat), MG_db_df$mg_name),]
+
+MG_db_df <- MG_db_df %>% 
+  replace_na(list(DBv1 = "-",
+                  DBv2 = "-",
+                  DBv3 = "-"))
+  
+ST_colors = RColorBrewer::brewer.pal(
+      length(unique(annot_df$mlst)),
+      "Paired"
+      )
+
+names(ST_colors) = unique(annot_df$mlst)
+
+
+mlst_annot = columnAnnotation(
+  # vectors for each annot
+  mlst_clade = as.character(annot_df$mlst_clade), 
+  ST = annot_df$mlst, 
+  
+  # colors is a list to match each annot type
+  col = list(
+    
+    mlst_clade = c(
+    "1" = "#8ad3db",
+    "2" = "#2bac13",
+    "3" = "#bfb6e2",
+    "4" = "#ff54d8",
+    "5" =  "#f24949",
+    "-" = "#edff54"
+    ),
+    ST = ST_colors
+  ),
+  
+  show_annotation_name = TRUE,
+  annotation_label = list(
+    mlst_clade = "Clade",
+    ST = "ST"
+  ),
+  annotation_name_gp = gpar(fontsize = 5),
+  annotation_name_side = "right",
+  
+  simple_anno_size = unit(0.5, "cm"),
+  gp = gpar(col = "black"),
+  show_legend = FALSE
+  )
+
+db_annot = rowAnnotation(
+      "V1" = MG_db_df$DBv1,
+      "V2" = MG_db_df$DBv2,
+      "V3" = MG_db_df$DBv3,
+  col = list(
+      "V1" = c("DBv1" = "#ffd58e", "-" = "white"),
+      "V2" = c("DBv2" ="#7352A9", "-" = "white"),
+      "V3" = c("DBv3" ="#52b3b6", "-" = "white")
+  ),
+  show_annotation_name = TRUE,
+  annotation_name_gp = gpar(fontsize = 5),
+  annotation_name_side = "bottom",
+  
+  simple_anno_size = unit(0.2, "cm"),
+  show_legend = FALSE
+)
+
+# define legend labels for heatmap
+legend_MG = Legend(
+  title = "Mean MG Coverage",
+  col_fun = cov_colors,
+  direction = "horizontal"
+  )
+
+legend_ANI =  Legend(
+  title = "ANI",
+  col_fun = ani_colors,
+  at = c(0.75, 0.95, 1),
+  labels = c("75%", "95%", "100%"),
+  direction = "horizontal"
+  )
+
+
+legend_ST = Legend(
+  title = "ST",
+  ncol = 4,
+  labels = names(ST_colors),
+  legend_gp = gpar(fill = ST_colors)
+  )
+
+legend_CLADE = Legend(
+  title = "Clade",
+  ncol = 3,
+  labels = c("1", "2", "3", "4", "5", "-"), 
+  legend_gp = gpar(fill = c(
+    "1" = "#8ad3db",
+    "2" = "#2bac13",
+    "3" = "#bfb6e2",
+    "4" = "#ff54d8",
+    "5" =  "#f24949",
+    "-" = "#edff54"
+    ))
+  )
+
+
+legend_heat = packLegend(
+  legend_MG, 
+  legend_ANI,
+  gap = unit(5, "mm"),
+  direction = "vertical"
+  )
+
+legend_annot = packLegend(
+  legend_CLADE,
+  legend_ST,
+  gap = unit(5, "mm"),
+  direction = "vertical"
+  )
+
+legend_plot = packLegend(  
+  legend_heat,
+  legend_annot,
+  direction = "vertical",
+  max_height = unit(10, "cm")
+  )
+
+
+## heat -------
+## also cluster by column to cluster low mg hits together
+## clustering order for mg (columns) funciton
+cdc30_mg_clust = dendsort::dendsort(hclust(dist(dist(t(cdc30_cov_heat)))),
+                                 isReverse = TRUE)
+# order ani heatmap by hclust default of rows
+cdc30_ani_clust = dendsort::dendsort(hclust(dist(cdc30_ani_mat)))
+
+
+# rows are samples and cols are mg
+    # heatmap of mg
+ Heatmap(t(cdc30_cov_heat),
+        col = cov_colors,
+        
+        # clustering
+        cluster_rows = cdc30_mg_clust,
+        cluster_columns = FALSE,
+        column_order = names(seriation::get_order(cdc30_ani_clust)),
+        # split by clade
+        #row_split = 2,
+        
+        ## annotation
+        # annotation
+        top_annotation = mlst_annot,
+        left_annotation = db_annot,
+        
+        # row names and displays
+        show_row_names = FALSE,
+        #row_names_side = "right",
+        row_dend_side = "right",
+        #row_dend_width = unit(2, "cm"),
+        show_column_names = TRUE,
+        column_names_gp = gpar(fontsize = 5),
+        column_dend_height = unit(2, "cm"),
+        column_names_side = "top",        
+        
+        # legend settings 
+        heatmap_legend_param = list(direction = "horizontal"),
+        show_heatmap_legend = FALSE,
+        
+        # heatmap body size 
+        height = unit(25, "cm"),
+        width = unit(7.5, "cm"),
+        use_raster = FALSE
+        ) %v%
+# heatmap of ani
+  Heatmap(cdc30_ani_mat,
+          col = ani_colors,
+          
+          # clustering
+          #cluster_rows = ani_clust,
+          #cluster_columns = FALSE,
+          row_order = names(seriation::get_order(cdc30_ani_clust)),
+          column_order= names(seriation::get_order(cdc30_ani_clust)),
+          # split by clade
+          row_dend_side = "left",
+          row_names_side = "right",
+          row_names_gp = gpar(fontsize = 5),
+          show_column_names = FALSE,
+          #column_names_gp = gpar(fontsize = 5),
+          #column_dend_height = unit(2, "cm"),
+          #column_names_side = "top",
+          
+          # legend settings 
+          heatmap_legend_param = list(direction = "horizontal"),
+          show_heatmap_legend = FALSE,
+          
+          # heatmap body size 
+          width = unit(7.5, "cm"),
+          height = unit(7.5, "cm"),
+          use_raster = FALSE
+          ) -> cdc30_mg_heat
+
+#add figure tag to complexheatmap
+
+as.ggplot(
+  grid.grabExpr({
+    draw(cdc30_mg_heat,
+    heatmap_legend_list = legend_plot,
+    merge_legend = FALSE,
+    heatmap_legend_side = "right",
+    background = "transparent"
+    )
+  })
+) -> cdc30_mg_heat_p
+
+cdc30_mg_heat_p +
+  labs(tag = "Fig S3") +
+   tag_theme() 
+
+```
+
+## Optimized MetaPhlAn4 performance on patient samples
+
+```{r Fig3A_isolate_detect_tree, fig.width = 7, fig.height =7, fig.cap="Neighbor joining phylogenetic tree of *C. difficile* isolates derived from patient fecal samples (n=73). The tree was constructed from pairwise genomic ANI distances. The detection of *C. difficile* from the fecal metagenomes by MetaPhlAn4 at stat_q of 0.20 decorates the tree and the sequence typing of each isolate was determined using MLST."}
+
+## tree data ------- 
+tree_genome_ANI <- ape::read.tree(here(data_PATH,"fastANI_ani.newick"))
+
+### prune ----
+## only keep SS73 isolates
+isolate_keep <- tibble(tip = tree_genome_ANI$tip.label) %>%
+  filter(tip %in% SS73_samplist$strain) %>%
+  pull()
+
+isolate_prune_tree <- ape::drop.tip(tree_genome_ANI, setdiff(tree_genome_ANI$tip.label, isolate_keep ), trim.internal = TRUE)
+
+
+### add MLST -----
+clade_ord <- c("Clade 1","Clade 2" ,"Clade 3" ,"Clade 4" ,"Clade 5","-")
+
+cdc_clade_df <- cdc_meta %>% 
+  select(genoMatchID = strain, mlst_clade, ST, mlst) %>% 
+  mutate(ST = as.numeric(ST),
+         clade = paste("Clade", mlst_clade),
+         strain = str_replace(genoMatchID, "-", "_")) %>% 
+  replace_na(list(clade = "-", MLST = "-")) %>% 
+  mutate(source = "CDC HAI")
+
+isolate_clade_df <- SS73_samplist %>% 
+  select(genoMatchID, strain, mlst_clade, ST) %>% 
+  mutate(ST = as.numeric(ST),
+    mlst = ifelse(!is.na(ST), 
+                  paste0("ST", ST), 
+                  ST),
+    clade = ifelse(!is.na(mlst_clade),
+                   paste("Clade", mlst_clade), 
+                   mlst_clade)) %>% 
+  replace_na(list(clade = "-", mlst = "-")) %>% 
+  distinct() %>% 
+  mutate(source = "Patient Isolate")
+
+
+clade_df <- bind_rows(isolate_clade_df, cdc_clade_df) %>% 
+  select(strain, genoMatchID, mlst, clade, source)
+
+
+### edit tree --------------------------------------
+### change underscores to dashes in CDC
+isolate_new_tips <- data.frame(strain = isolate_prune_tree$tip.label) %>%
+  # add the ST information to the tree
+  left_join(isolate_clade_df %>% select(-ST), by = "strain") %>% 
+  left_join(SS73_samplist %>% 
+              select(genoMatchID, sample_id, label = culture_id))
+
+isolate_prune_tree$tip.label = isolate_new_tips$label
+
+
+isolate_clade_nodes <- as_tibble(isolate_prune_tree) %>% 
+  select(node, label) %>% 
+  left_join(isolate_new_tips) %>% 
+  filter(!is.na(node) & !is.na(genoMatchID)) %>%
+  select(node, genoMatchID, clade, mlst, source) %>% 
+  mutate(clade = factor(clade,
+                        levels = clade_ord))
+  
+# add helper data to tree
+isolate_tree_phy = as.phylo(isolate_prune_tree)
+isolate_cdiff_tree = full_join(isolate_tree_phy, isolate_clade_nodes, by = "node")
+  
+
+## plot tree ----
+## ANI tree base
+isolate_cdiff_tree_p <- ggtree(isolate_cdiff_tree,
+        branch.length='none',
+        layout = "circular")
+
+## added cdiff mlst
+isolate_st_tree_p <- open_tree(isolate_cdiff_tree_p, 90) +
+  # add the tip points
+  geom_tippoint(
+                size = 1,
+                shape = 21,
+                show.legend = FALSE,
+                fill = "white") +
+  # add the labels
+  geom_tiplab(
+    size = 7/ggplot2::.pt,
+    family= font,
+    align = TRUE,
+    linesize = 0,
+    offset = 0.5) +
+  # new scale
+  new_scale_fill() +
+  ggtree::geom_hilight(
+    data = isolate_clade_nodes,
+    mapping = aes(
+      node = node,
+      fill = clade),
+    type = "roundrect",
+    to.bottom = TRUE,
+    align = "both"
+  )+
+    # colors for STs
+  scale_fill_manual(
+    "Clade",
+    values = cdiff_clade_cols
+  )
+
+#isolate_st_tree_p
+
+## annot -------
+# cdiff specific relative abundance
+## collect the RA and detection of cdiff per platform --
+cdiff_ra_0.2 <- mp_default_tax_df %>% 
+  filter(taxid == 1496) %>% 
+  select(genoMatchID, statq_0.20 = relative_abundance)
+  
+cdiff_ra_0.1 <- mp_stat_0.10_tax_df %>% 
+  filter(taxid == 1496) %>% 
+  select(genoMatchID, statq_0.10 =relative_abundance)
+
+cdiff_ra_0.05 <- mp_stat_0.05_tax_df %>% 
+  filter(taxid == 1496) %>% 
+  select(genoMatchID, statq_0.05 =relative_abundance)
+
+cdiff_ra_local_0.05 <- mp_local_stat_0.05_tax_df %>% 
+  filter(taxid == 1496) %>% 
+  select(genoMatchID, statq_0.05_local = relative_abundance)
+
+
+# cdiff ra for all 505 in sampleset -----
+sampleset_cdiff_ra_df <- sampleset %>% 
+  select(genoMatchID) %>% 
+  left_join(cdiff_ra_0.2) %>%
+  left_join(cdiff_ra_0.1) %>% 
+  left_join(cdiff_ra_0.05) %>% 
+  left_join(cdiff_ra_local_0.05) %>% 
+  mutate(across(c(statq_0.20, statq_0.10, statq_0.05, statq_0.05_local),
+                ~ replace_na(., 0))) 
+
+## summarize the relative abundance -----
+sampleset_cdiff_ra_sum <- sampleset_cdiff_ra_df %>% 
+  pivot_longer(
+    c(statq_0.20, statq_0.10, statq_0.05, statq_0.05_local),
+    names_to = "taxclass",
+    values_to = "RA") %>% 
+  group_by(taxclass) %>% 
+  rstatix::get_summary_stats()
+
+isolate_hd_cdiff_detect <- sampleset_cdiff_ra_df %>% 
+  filter(genoMatchID %in% SS73_samplist$genoMatchID|
+           grepl("HD_DFI", genoMatchID)) %>% 
+  mutate(
+    mp_0.20 = ifelse(statq_0.20 > 0, 1, 0),
+    mp_0.10 = ifelse(statq_0.10 > 0, 1, 0),
+    mp_0.05 = ifelse(statq_0.05 > 0, 1, 0),
+    mp_0.05_local = ifelse(statq_0.05_local> 0, 1, 0)
+    ) %>% 
+  select(genoMatchID, mp_0.20, mp_0.10, mp_0.05, mp_0.05_local)%>% 
+  mutate(group = ifelse(grepl("HD", genoMatchID), "HDs", "pts"))
+
+isolate_hd_cdiff_detect_sum <- isolate_hd_cdiff_detect %>% 
+      pivot_longer(
+      mp_0.20:mp_0.05_local,
+      names_to = "taxclass",
+      values_to = "detect") %>% 
+      group_by(group,taxclass) %>% 
+      summarize(detect_sum = sum(detect))%>% 
+  mutate(detect_pct = ifelse(group == "HDs",
+                             round(detect_sum/21*100, 1), 
+                             round(detect_sum/73*100, 1)))
+
+# decorate with fruit
+isolate_detect_fruit = as_tibble(isolate_cdiff_tree) %>% 
+  filter(!is.na(genoMatchID)) %>% 
+  select(label, genoMatchID) %>% 
+  left_join(isolate_hd_cdiff_detect %>% 
+    select(genoMatchID,
+         mp_0.20, mp_0.05_local)) %>% 
+    pivot_longer(mp_0.20:mp_0.05_local,
+               names_to = "taxclass",
+               values_to = "detect") %>% 
+  mutate(detect_col = ifelse(detect>0,
+                             paste(taxclass, detect), 
+                             as.character(detect))) %>% 
+  replace_na(list(detect_col="CDC")) %>% 
+  mutate(detect_col = factor(
+    detect_col,
+    levels = c("0", "mp_0.05_local 1",
+               "mp_0.20 1"
+               ))) %>% 
+  filter(taxclass %in% c("mp_0.20"))
+
+
+isolate_st_tree_p +
+  new_scale_fill()+ # new scale
+  geom_fruit( # add heatmap
+    data = isolate_detect_fruit,
+    geom = geom_tile,
+    mapping = aes(
+      y = label,
+      x = taxclass,
+      fill = detect_col
+    ),
+    color="black",
+    offset = 0.4, #distance between external layers
+    pwidth = 1, # width of external layer (0.1 for all taxclass)
+    #show.legend = FALSE
+  ) +
+  scale_fill_manual(
+    "*C. difficile* detection",
+    values = c(
+      "0" = "white", 
+      "mp_0.20 1" = tax_class_cols[["Metaphlan4_default"]]
+    ),
+    labels = c("undetected", 
+               "MetaPhlAn4 (default)")) +
+  theme(
+    # remove weird lines
+    axis.line = element_blank(),
+    # move legend
+    legend.position = c(0.7,0.3), 
+    legend.direction = "vertical",
+    legend.title = element_markdown(
+      size = 7,
+      family= font, face = "bold"),
+    legend.text = element_text(
+      family= font,
+      size = 6)
+    )-> isolate_detect_tree_p
+
+isolate_detect_tree_p +
+  labs(tag = "Fig 3A") +
+  tag_theme()
+
+```
+
+```{r S1B_CDC_tree, fig.width= 7, fig.height=7, fig.cap = "Neighbor joining phylogenetic tree featuring 30 *C. difficile* isolate genomes, derived from the CDC EIP, constructed from genomic ANI distances."}
+## prune ----
+## only keep SS73 isolates
+cdc_keep <- tibble(tip = tree_genome_ANI$tip.label) %>%
+  filter(grepl("CDI", tip)) %>%
+  pull()
+
+cdc_prune_tree <- ape::drop.tip(tree_genome_ANI, setdiff(tree_genome_ANI$tip.label, cdc_keep ), trim.internal = TRUE)
+
+### edit tree --------------------------------------
+### change underscores to dashes in CDC
+cdc_new_tips <- data.frame(strain = cdc_prune_tree$tip.label) %>%
+  # add the ST information to the tree
+  left_join(clade_df, by = "strain") %>% 
+  mutate(label = paste0(genoMatchID, " (",mlst, ")"))
+
+cdc_prune_tree$tip.label = cdc_new_tips$label
+
+
+cdc_clade_nodes <- as_tibble(cdc_prune_tree) %>% 
+  select(node, label) %>% 
+  left_join(cdc_new_tips) %>% 
+  filter(!is.na(node) & !is.na(clade)) %>%
+  select(node, label,genoMatchID, clade, mlst, source)%>% 
+  mutate(clade = factor(clade,
+                        levels = clade_ord))
+  
+# add helper data to tree
+cdc_tree_phy = as.phylo(cdc_prune_tree)
+cdc_cdiff_tree = full_join(cdc_tree_phy, cdc_clade_nodes, by = "node")
+
+
+## plot tree ----
+## ANI tree base
+cdc_cdiff_tree_p <- ggtree(cdc_cdiff_tree,
+        branch.length='none',
+        layout = "circular")
+
+## added cdiff mlst
+cdc_st_tree_p <- open_tree(cdc_cdiff_tree_p, 90) +
+  # add the tip points
+  geom_tippoint(
+                size = 1,
+                shape = 21,
+                show.legend = FALSE,
+                fill = "white") +
+  # add the labels
+  geom_tiplab(
+    size = 7/ggplot2::.pt,
+    family= font,
+    align = TRUE,
+    linesize = 0,
+    offset = 0.25) +
+  # new scale
+  new_scale_fill() +
+  ggtree::geom_hilight(
+    data = cdc_clade_nodes,
+    mapping = aes(
+      node = node,
+      fill = clade),
+    type = "roundrect",
+    to.bottom = TRUE,
+    align = "both"
+  )+
+    # colors for STs
+  scale_fill_manual(
+    "Clade",
+    values = cdiff_clade_cols
+  )+
+  theme(
+    # remove weird lines
+    axis.line = element_blank(),
+    # move legend
+    legend.position = c(0.6,0.4), 
+    legend.direction = "vertical",
+    legend.title = element_markdown(size = 7, family= font, face = "bold"),
+    legend.text = element_text(size = 6, family= font)
+    ) 
+
+cdc_st_tree_p+
+  labs(tag = "Fig S1B") +
+  tag_theme()
+
+```
+
+```{r Fig3B_isolate_heat, fig.height = 10, fig.width=8, fig.cap = "Detection of *C. difficile* by PCR tests for *C. difficile* *16S rRNA* gene, *tcdB*, and by the Cobas *C. difficile* Test used for patient diagnosis (n=73). Diversity of each isolate is characterized using MLST. The detection of *C. difficile* using MetaPhlAn4 is compared between default (0.20) and local stat_q adjustment (0.05). The read counts for each metagenomic sample are binned every 4 million reads and capped at $10^7$ reads. The quantified number of *C. difficile* 16S copies per mg of fecal sample are binned into high ($>= 10^5$) or low ($<10^5$)."}
+## collect tests ------
+clin_dx_FILE <- last(list.files(
+  data_PATH,
+  pattern= "SS73_clinsamp_filtered-.*csv",
+  full.names = TRUE
+))
+
+clin_dx <- read.csv(clin_dx_FILE)%>% 
+  select(genoMatchID, clin_dx)
+
+
+# collect all tests available for the SS73 samples
+collect_tests_df <- wgs_pcr %>% 
+  select(-mismatch, -Sample.ID, -"BC..", "X", "X.1",-Qubit) %>% 
+  # add the annotation information
+  # add the clin_dx information
+  left_join(clin_dx)
+
+# order by increasing MSLT clade and then ST
+sample_ord <- SS73_samplist %>% 
+  mutate(ST= as.numeric(ST)) %>% 
+  arrange(mlst_clade, ST) %>% 
+  glimpse() %>% 
+  pull(sample_id)
+
+# blastp results for toxins
+toxin_blastp_tophit_FILE <- last(list.files(
+  data_PATH,
+  pattern= "SS.TAX.021-toxin_blastp_tophit.*csv",
+  full.names = TRUE
+))
+
+
+toxin_blastp_tophit <- read.csv(toxin_blastp_tophit_FILE) %>% select(-X)
+
+SS73_toxin_blastp <- SS73_samplist %>% 
+  mutate(seq_id = str_remove(seqid, ".fna")) %>% 
+  left_join(toxin_blastp_tophit)
+
+##LONG
+## matrix for cdiff testing --------
+test_mat <- collect_tests_df %>%
+  left_join(SS73_samplist %>% select(genoMatchID, sample_id)) %>%
+  # factor + arrange to set the order for samples
+  mutate(sample_id = factor(
+    sample_id,
+    levels = sample_ord
+  )) %>%
+  arrange(sample_id) %>%
+  # name of the heatmap rows
+  select(sample_id,
+    `Cdiff 16S` = Cdiff_16S,
+    `cobas Cdiff Test` = clin_dx,
+    `Cultured Isolate tcdB` = wgs_tcdB
+  ) %>%
+  mutate(across(-sample_id, ~ ifelse(. == "Y", 1, 0))) %>%
+  column_to_rownames(var = "sample_id") %>%
+  as.matrix() 
+
+
+# detection summary -----
+
+cdiff_detect_mat =
+  isolate_hd_cdiff_detect %>% # factor + arrange to set the order for samples
+  filter(!grepl("HD", genoMatchID)) %>%
+  left_join(SS73_samplist %>% select(genoMatchID, sample_id)) %>%
+  mutate(sample_id = factor(
+    sample_id,
+    levels = sample_ord
+  )) %>%
+  arrange(sample_id) %>%
+  select(-genoMatchID) %>%
+  column_to_rownames(var = "sample_id") %>%
+  as.matrix()
+
+# hmm hits matrix ---------
+hmm_hits_FILE <- last(list.files(data_PATH,
+    pattern="SS.TAX.018-hmm_hits_df_.*csv",
+    full.names=TRUE))
+
+hmm_hits_df <- read.csv(hmm_hits_FILE) %>% 
+  mutate(seqid = paste0(seqid, ".fna")) %>% 
+  left_join(SS73_samplist_raw %>% select(genoMatchID, seqid, sample_id)) %>% 
+  select(-X)
+
+hmm_heat_df <- SS73_samplist %>% 
+  select(sample_id, mlst_clade, ST) %>% 
+  left_join(hmm_hits_df)
+
+hmm_heat_sum <- hmm_heat_df %>% 
+  group_by(sample_id, paloc_query) %>% 
+  summarize(hits = n_distinct(subject_access)) %>% 
+  pivot_wider(names_from = paloc_query,
+              values_from = hits,
+              values_fill = 0) %>% 
+  select(-`NA`) %>% 
+  #to set the order for samples
+  mutate(sample_id = factor(
+    sample_id,
+    levels = sample_ord
+    # or do new ord when needed
+  )) %>% 
+    arrange(sample_id)
+
+hmm_mat <- hmm_heat_sum %>% 
+  ungroup() %>% 
+  mutate(sample_id = factor(
+   sample_id,
+    levels = sample_ord
+  )) %>% 
+  arrange(sample_id) %>% 
+  column_to_rownames(var = "sample_id")%>% 
+  as.matrix()
+
+dim(hmm_mat)
+
+
+# clade_df ------
+heat_clade_df <- isolate_clade_df %>%
+  select(genoMatchID, clade, mlst) %>%
+  left_join(SS73_samplist %>% select(genoMatchID, sample_id)) %>%
+  mutate(sample_id = factor(
+    sample_id,
+    levels = sample_ord
+  )) %>%
+  arrange(sample_id) %>%
+  select(-genoMatchID) %>%
+  mutate(clade = factor(clade,
+    levels = clade_ord
+  ))
+
+# order the STs in numeric order (ascending)
+ST_ord = heat_clade_df %>% 
+  distinct(mlst) %>% 
+  filter(mlst != "-") %>% 
+  mutate(ST= as.numeric(str_remove(mlst,"ST"))) %>% 
+  arrange(ST)%>% 
+  pull(mlst)
+
+
+# include the - or unknown ST
+ST_ord = c(ST_ord, "-")
+
+# make the colors based on this
+ST_col = colorRampPalette(RColorBrewer::brewer.pal(12, "Set3"))(length(ST_ord))
+names(ST_col) = ST_ord
+
+# cdiff_ra mat -------
+
+cdiff_ra_mat <- sampleset_cdiff_ra_df %>%
+  filter(!grepl("HD", genoMatchID) &
+           genoMatchID %in% SS73_samplist$genoMatchID) %>%
+  left_join(SS73_samplist %>% select(genoMatchID, sample_id)) %>%
+  mutate(sample_id = factor(
+    sample_id,
+    levels = sample_ord
+  )) %>%
+  arrange(sample_id) %>%
+  select(-genoMatchID) %>%
+  column_to_rownames(var = "sample_id") %>%
+  as.matrix()
+
+dim(cdiff_ra_mat)
+
+# blastp paloc annotation mat ------
+toxin_blastp_mat = SS73_toxin_blastp %>%
+  select(genoMatchID, gene) %>%
+  mutate(blastp = 1) %>%
+  pivot_wider(
+    names_from = gene,
+    values_from = blastp,
+    values_fill = 0
+  ) %>%
+  left_join(SS73_samplist %>% select(genoMatchID, sample_id)) %>%
+  mutate(sample_id = factor(
+    sample_id,
+    levels = sample_ord
+  )) %>%
+  arrange(sample_id) %>%
+  select(-genoMatchID) %>%
+  column_to_rownames(var = "sample_id") %>%
+  as.matrix()
+
+dim(toxin_blastp_mat)
+
+## annotation set up ------------
+## cdiff qpcr abundances -----
+qpcr_vec <- cdiff_qpcr %>%
+  select(genoMatchID, mean.copies) %>%
+  distinct(genoMatchID, .keep_all = TRUE) %>%
+  filter(genoMatchID %in% SS73_samplist$genoMatchID) %>%
+  # factor + arrange to set the order for samples
+  right_join(SS73_samplist %>% select(genoMatchID, sample_id)) %>%
+  mutate(sample_id = factor(
+    sample_id,
+    levels = sample_ord
+  )) %>%
+  arrange(sample_id) %>%
+  mutate(mean.copies = replace_na(mean.copies, 0)) %>%
+  pull(mean.copies, name = "sample_id")
+
+
+
+## counts -------
+# make the colors for binning the counts
+# 2mill bin: 6 colors
+count_vec <- reads_tbl %>%
+  filter(genoMatchID %in% SS73_samplist$genoMatchID) %>%
+  # factor + arrange to set the order for samples
+  left_join(SS73_samplist %>% select(genoMatchID, sample_id)) %>%
+  mutate(sample_id = factor(
+    sample_id,
+    levels = sample_ord
+  )) %>%
+  arrange(sample_id) %>%
+  pull(count, name = "sample_id")
+
+#cap the reads! min = 4e6 and max = 1e7
+count_vec = pmin(pmax(count_vec, 4e6), 1e7)
+
+## make additional plot for qcpr vs mp detection (colored by read depth)
+
+
+
+## counts and relative abundances -----
+#count_breaks = c(4e6, 6e6, 8e6, 1e7, 5e7)
+count_breaks = seq(1e6, 1e7, 1e6)
+# divide by 1e6 to present X million reads
+count_labs = as.character(count_breaks/1e6)
+
+
+
+#bin the values in count_vec into the groups defined in count_breaks
+count_bin = cut(count_vec, 
+                breaks = count_breaks,
+                include.lowest = TRUE,
+                right = TRUE)
+
+## legend -----
+library(gridtext)
+heat_leg_title_size = fig_text_size+2
+heat_leg_text_size = fig_text_size+1
+
+## colors for heatmap --------
+heat_cols = structure(c("white", "#b32241"),
+                      names = c("0", "1"))
+## cdiff detection --------
+default_detect_col = structure(c("white", "#417447"),
+                       names = c(0, 1))
+
+local_detect_col = structure(c("white", "#A7C786"),
+                       names = c(0, 1))
+
+read_pal <- colorRampPalette(RColorBrewer::brewer.pal(5, "Accent"))(length(count_breaks) - 1)
+
+ra_breaks = c(1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9)
+ra_labels = sapply(log10(ra_breaks),function(i)
+  as.expression(bquote(10^ .(i)))) 
+
+qpcr_col <- ifelse(qpcr_vec >= 1e5, "#e0218a", "blue")
+
+
+
+legend_test = Legend(
+  title = gt_render("*C. difficile* NAAT"),
+  title_gp = gpar(
+    fontsize = heat_leg_title_size, 
+    fontfamily = font,
+    fontface = "bold"),
+  ncol = 1,
+  labels = c(
+    "undetected",
+    "detected"),
+  labels_gp = gpar(
+    fontfamily = font,
+    fontsize = heat_leg_text_size),
+  border = TRUE,
+  legend_gp = gpar(
+    color = "black",
+    fill = c(
+      "undetected" = "white",
+      "detected" = "#b32241"),
+    fontfamily = font,
+    lwd = line_size
+    ))
+
+legend_mp = Legend(
+  title = "Metagenomic Detection",
+  title_gp = gpar(
+    fontsize = heat_leg_title_size, 
+    fontfamily = font,
+    fontface = "bold"),
+  ncol = 1,
+  labels = c(
+    "undetected",
+    "MP (0.20)",
+    "MP (local 0.05)"),
+  labels_gp = gpar(
+    fontfamily = font,
+    fontsize = heat_leg_text_size),
+  border = TRUE,
+  legend_gp = gpar(
+    color = "black",
+    fill = c(
+      "undetected" = "white",
+      "MP (0.20)"= "#417447",
+      "MP (local 0.05)" = "#A7C786"
+      ),
+    lwd = line_size)
+  )
+
+legend_ST = Legend(
+  title = "ST",
+  title_gp = gpar(
+    fontsize = heat_leg_title_size, 
+    fontfamily = font,
+    fontface = "bold"),
+  ncol = 4,
+  labels = names(ST_col),
+  labels_gp = gpar(
+    fontfamily = font,
+    fontsize = heat_leg_text_size),
+  border = TRUE,
+  legend_gp = gpar(
+    color = "black",
+    fill = ST_col,
+    lwd = line_size)
+)
+
+legend_CLADE = Legend(
+  title = "Clade",
+  title_gp = gpar(
+    fontsize = heat_leg_title_size, 
+    fontfamily = font,
+    fontface = "bold"),
+  ncol = 2,
+  labels = c("Clade 1", "Clade 2", "Clade 3", "Clade 4", "Clade 5", "-"), 
+  labels_gp = gpar(
+    fontfamily = font,
+    fontsize = heat_leg_text_size),
+  border = TRUE,
+  legend_gp = gpar(
+    color = "black", 
+    fill = c(
+      cdiff_clade_cols[["Clade 1"]],
+      cdiff_clade_cols[["Clade 2"]],
+      cdiff_clade_cols[["Clade 3"]],
+      cdiff_clade_cols[["Clade 4"]],
+      cdiff_clade_cols[["Clade 5"]],
+      cdiff_clade_cols[["-"]]),
+    lwd = line_size)
+)
+
+legend_qpcr = Legend(
+  title = gt_render("*C. diff* 16S qPCR"),
+  title_gp = gpar(
+    fontsize = heat_leg_title_size, 
+    fontfamily = font,
+    fontface = "bold"),
+  ncol = 1,
+  labels = gt_render(
+    c("<10<sup>5</sup>",
+      "&ge;10<sup>5</sup>")),
+  labels_gp = gpar(
+    fontfamily = font,
+    fontsize = heat_leg_text_size),
+  border = TRUE,
+  legend_gp = gpar(
+    color = "black",
+    fill = c("blue", "#e0218a"),
+    lwd = line_size)
+  )
+
+
+hmm_cols = circlize::colorRamp2(c(0, 1, 4), c("white", "#2c68c9", "#08234f"))
+
+legend_hmm = Legend(
+  title = "HMM hits",
+    title_gp = gpar(
+    fontsize = heat_leg_title_size, 
+    fontfamily = font,
+    fontface = "bold"),
+  at = c(0, 1, 2, 3, 4), # Key values on the legend
+  labels_gp = gpar(
+    fontfamily = font,
+    fontsize = heat_leg_text_size),
+  col_fun = hmm_cols,
+  legend_gp = gpar(
+    lwd = line_size)# Color function
+    )
+
+legend_detect = packLegend(
+  legend_CLADE,
+  legend_test, 
+  legend_mp,
+  gap = unit(3, pg_units),
+  direction = "vertical"
+)
+
+legend_hits = packLegend(
+  legend_hmm,
+  legend_qpcr,
+  gap = unit(3, pg_units),
+  direction = "vertical"
+)
+
+
+legend_heat = packLegend(
+  legend_detect,
+  legend_hits,
+  direction = "horizontal"
+)
+
+## heatmap -----
+# Define the aspect ratio for square cells
+num_rows <- nrow(test_mat)  
+rel_axis_text = 1.4
+
+left_annot = rowAnnotation(
+  `MP 0.20` = cdiff_detect_mat[, 1],
+  `MP 0.05` = cdiff_detect_mat[, 3],
+  
+  clade = anno_simple(heat_clade_df$clade,
+    col = c(
+      "Clade 1" = cdiff_clade_cols[["Clade 1"]],
+      "Clade 2" =cdiff_clade_cols[["Clade 2"]],
+      "Clade 3" =cdiff_clade_cols[["Clade 3"]],
+      "Clade 4" =cdiff_clade_cols[["Clade 4"]],
+      "Clade 5" =cdiff_clade_cols[["Clade 5"]],
+      "-" =cdiff_clade_cols[["-"]]),
+    gp = gpar(col = "white"),
+    #width = unit(3, "mm")
+    simple_anno_size = unit(3, "mm")
+  ),
+  ST = anno_simple(heat_clade_df$mlst,
+    col = ST_col,
+    gp = gpar(col = "white"),
+    pch = heat_clade_df$mlst,
+    pt_size = unit(1, "snpc") * 0.3,
+    simple_anno_size = unit(3, "mm")
+  ),
+  col = list(
+    `MP 0.20` = default_detect_col,
+    `MP 0.05` = local_detect_col
+  ),
+  annotation_name_gp = gpar(
+    fontsize = fig_text_size*1.3,
+    fontfamily = font
+  ),
+  
+  gp = gpar(col = "white"),
+  simple_anno_size = unit(3, "mm"),
+  gap = unit(0.5, pg_units),
+  annotation_name_side = "bottom",
+  show_legend = FALSE
+)
+
+# slice by clin_dx and then by tcdB annot ---
+test_heat <- Heatmap(test_mat,
+  col = heat_cols,
+  border = "black",
+  left_annotation = left_annot,
+
+  rect_gp = gpar(col = "white", 
+                 lwd = line_size/2),
+  cluster_columns = FALSE,
+  cluster_rows = FALSE,
+  heatmap_legend_param = list(direction = "vertical"),
+  show_heatmap_legend = FALSE,
+  show_row_names = FALSE,
+  #row_names_gp = gpar(fontsize = fig_text_size+2/ggplot2::.pt,fontfamily = font),
+  column_labels = gt_render(
+    c("*C. diff 16S*","*tcdB*","Cobas")
+  ),
+  column_names_side = "bottom",
+  column_names_gp = gpar(
+    fontfamily = font,
+    fontsize = fig_text_size*rel_axis_text),
+  column_names_max_height = unit(6, "mm"),
+  #row_names_side = "left",
+  # size of entire heatmap
+  heatmap_width = unit(30, "mm"),
+  heatmap_height = unit(245, "mm")
+) 
+
+# make the height taller
+bar_annot <- rowAnnotation(
+  `Million Reads` = anno_barplot(
+    count_vec,
+    axis_param = list(
+      at = count_breaks,
+      labels = count_labs,
+      labels_rot = 0,
+      gp = gpar(
+        fontsize = fig_text_size*rel_axis_text,
+        fontfamily = font,
+        lwd = line_size/2)),
+    ylim = c(4e6, 1e7),
+    which = "column",
+    bar_width = 0.9,
+    width = unit(25, "mm"),
+    axis = TRUE,
+    show_legend = FALSE,
+    gp = gpar(fill = "#40658B",
+              lwd = line_size/2)
+  ),
+  `C. diff qPCR` = anno_barplot(
+    log(qpcr_vec + 1, base = 10),
+    axis_param = list(
+      at = log10(ra_breaks),
+      labels = ra_labels,
+      labels_rot = 0,
+      gp = gpar(
+        fontsize = fig_text_size*rel_axis_text,
+        fontfamily = font,
+        lwd = line_size/2)),
+    which = "column",
+    bar_width = 0.9,
+    width =  unit(30, "mm"),
+    axis = TRUE,
+    gp = gpar(fill = qpcr_col,
+              lwd = line_size/2),
+    show_legend = FALSE
+  ),
+  annotation_label = gt_render(c("reads x10<sup>-6</sup>", "copies mg<sup>-1</sup>")),
+  annotation_name_gp = gpar(
+    fontsize = fig_text_size+1.5,
+    fontfamily = font,
+    fontface = "bold"
+  ),
+  annotation_name_side = "bottom",
+  annotation_name_rot = 0, # Rotate annotation names 90 degrees
+  gap = unit(1, pg_units)
+)
+
+reads_heat <- Heatmap(hmm_mat,
+    col = hmm_cols,
+    border = "black",
+    right_annotation = bar_annot,
+
+    # add border color in heatmap
+    rect_gp = gpar(col = "white", 
+                   lwd = line_size/2),
+    cluster_columns = FALSE,
+    cluster_rows = FALSE,
+    heatmap_legend_param = list(direction = "vertical"),
+    show_heatmap_legend = FALSE,
+  show_row_names = FALSE,
+  #row_names_gp = gpar(fontsize = fig_text_size+2/ggplot2::.pt,fontfamily = font),
+  column_labels = gt_render(c("*tcdA*","*tcdB*","*tcdC*","*tcdE*","*tcdR*")),
+  column_names_side = "bottom",
+  column_names_gp = gpar(
+    fontfamily = font,
+    fontsize = fig_text_size*rel_axis_text
+  ),
+  column_names_max_height = unit(6, "mm"),
+
+    # heatmap body size
+    heatmap_width = unit(75, "mm"),
+    heatmap_height = unit(245, "mm")
+  )
+
+
+isolate_heat = test_heat + reads_heat
+
+
+#add figure tag to complexheatmap
+
+as.ggplot(
+  grid.grabExpr({
+    draw(isolate_heat,
+    heatmap_legend_list = legend_heat,
+    merge_legend = FALSE,  
+    heatmap_legend_side = "left",
+    background = "transparent")
+  })
+) -> isolate_heat_p
+
+isolate_heat_p +
+  labs(tag = "Fig 4B") +
+   tag_theme() 
+```
+
+```{r S4C_isolate_mlst_bar, fig.width=4, fig.height=4, fig.cap = "Number of isolates by ST from the *C. difficile* culture collection."}
+isolate_mlst_sum <-isolate_clade_df %>% 
+  group_by(clade, mlst) %>% 
+  summarise(n = n_distinct(genoMatchID),
+            .groups="drop") %>% 
+  arrange(n) %>% 
+  mutate(
+    clade = factor(clade,
+                        levels = clade_ord),
+    mlst = str_replace(mlst, "-", "ST-"),
+    mlst = factor(mlst,
+                  levels=mlst)
+    )
+
+
+isolate_mlst_bar <- isolate_mlst_sum %>% 
+  ggplot(aes(x=n, y = mlst, fill = clade))+
+  geom_bar(
+    stat = "identity",
+    color = "black"
+  )+
+   scale_fill_manual(
+    "Clade",
+    values = cdiff_clade_cols
+   )+
+  scale_x_continuous(
+    expand = expansion(c(0, 0.1))
+  )+
+  labs(
+    x = "N Isolates",
+    y = ""
+  )+
+  theme_bw()+
+  theme(
+    axis.text = element_text(family= font,
+                             size = fig_text_size),
+    axis.title = element_text(family= font, 
+                              face= "bold",
+                              size = fig_text_size+1),
+    legend.title = element_text(family= font,
+                                face= "bold",
+                                size = fig_text_size+2),
+    legend.text = element_text(family = font,
+                               size = fig_text_size+1)
+  )
+
+isolate_mlst_bar +
+  labs(tag = "Fig S4C") +
+  tag_theme()
+```
+
+```{r Fig3C_isolate_detect_mp_bar, fig.width=3, fig.height=3, fig.cap = "Detection of *C. difficile* from the metagenomes of the patient-derived fecal samples between between local stat_q adjustment (0.05) and default (0.20)."}
+isolate_detect_mp_df <- isolate_hd_cdiff_detect %>% 
+  filter(group == "pts") %>% 
+  select(
+    genoMatchID,
+    mp_0.20,
+    mp_0.05_local) %>% 
+  pivot_longer(
+    mp_0.20:mp_0.05_local,
+    names_to = "taxclass",
+    values_to = "detect"
+  )
+
+isolate_detect_mp_bar <- isolate_detect_mp_df %>%
+  mutate(
+    taxclass = factor(taxclass,
+      levels = c("mp_0.20", "mp_0.05_local"),
+      labels = c("default", "local 0.05")
+    ),
+    detect_lab = as.factor(detect),
+      detect_lab = factor(detect_lab,
+        levels = c("0", "1"),
+        labels = c("undetected", "detected")
+    )
+  ) %>%
+  ggplot(aes(x = taxclass, fill = detect_lab)) +
+  geom_histogram(
+    stat = "count",
+    position = "stack",
+    color = "black"
+  ) +
+  geom_text(
+    aes(label = after_stat(count)),
+    stat = "count",
+    position = position_stack(vjust = 0.5), # Centers text within bars
+    size = 6 / ggplot2::.pt
+  ) +
+  scale_y_continuous(
+    expand = c(0, 0)
+  ) +
+  labs(
+    x = "",
+    y = "*C. difficile* detected samples"
+  ) +
+  sophie_theme() +
+  theme(
+    aspect.ratio = 1,
+    legend.position = "none"
+  )
+
+isolate_detect_mp_bar+
+  labs(tag = "Fig 3C") +
+  tag_theme()
+```
+
+```{r pt_taxclass_phy}
+# for all 484 pt samples
+pt_sampleset = sampleset %>% 
+  filter(!grepl("HD_DFI", genoMatchID))
+
+sampleset_taxclass_df <- bind_rows(mp_default_tax_df %>% 
+                              filter(relative_abundance>0) %>% 
+                              mutate(taxclass = "mp_0.20"),
+                            mp_stat_0.05_tax_df %>% 
+                              filter(relative_abundance>0) %>% 
+                              mutate(taxclass = "mp_0.05"),
+                            mp_local_stat_0.05_tax_df %>% 
+                              filter(relative_abundance>0) %>% 
+                              mutate(taxclass = "mp_0.05_local")
+                            ) %>%
+  mutate(mat_id = paste0(genoMatchID, "-", taxclass),
+         spec_id = paste0(Kingdom, "|", 
+                          Phylum, "|",
+                          Class, "|",
+                          Order, "|",
+                          Family, "|",
+                          Genus,"|",
+                          Species
+                          )) 
+
+pt_taxclass_df <- sampleset_taxclass_df %>% 
+  # only keep the healthy donors
+  filter(!grepl("HD_DFI", genoMatchID))
+
+length(unique(pt_taxclass_df$genoMatchID))
+
+# build a phyloseq to store information
+pt_taxclass_otu_mat <- pt_taxclass_df %>% 
+  # species_lab = reported taxa from mp
+  group_by(mat_id, spec_id) %>% 
+  # summarize RA to the NCBI taxlvl information
+  summarize(new_ra = sum(relative_abundance)) %>% 
+  pivot_wider(names_from = mat_id, 
+              values_from = new_ra,
+              values_fill = 0) %>% 
+  column_to_rownames(var = "spec_id") %>% 
+  as.matrix()
+
+dim(pt_taxclass_otu_mat)
+
+pt_taxclass_tax_mat <- pt_taxclass_df %>% 
+  # species_lab = reported taxa from mp
+  select(spec_id, Kingdom, Phylum, Class, Order, Family, Genus, Species) %>% 
+  distinct() %>% 
+  column_to_rownames(var = "spec_id") %>% 
+  as.matrix()
+
+dim(pt_taxclass_tax_mat)
+
+pt_taxclass_sam_df <- pt_taxclass_df %>% 
+  select(sample=mat_id, genoMatchID, taxclass, seq_id) %>% 
+  distinct() %>% 
+  mutate(
+    pat_type = ifelse(grepl("HD_DFI", genoMatchID), "Healthy", "Patient"),
+    taxclass_lab = paste("taxclass", taxclass)
+  ) %>% 
+  left_join(study.redcap.TOTAL %>% 
+              select(genoMatchID, db, count)) %>% 
+  left_join(all_pcr_samps_data) %>% 
+  # factor
+  mutate(Cdiff_16S = factor(Cdiff_16S,
+                            levels = c("N", "Y"),
+                            labels = c("16S-", "16S+")),
+         tcdB = factor(tcdB,
+                            levels = c("N", "Y"),
+                            labels = c("tcdB-", "tcdB+")),
+         pcr = paste(Cdiff_16S, tcdB)) %>% 
+  column_to_rownames(var = "sample")
+
+pt_OTU = otu_table(pt_taxclass_otu_mat, taxa_are_rows = TRUE)
+pt_TAX = tax_table(pt_taxclass_tax_mat)
+pt_SAM = sample_data(pt_taxclass_sam_df)
+
+pt_taxclass_phy <- phyloseq(pt_OTU,pt_TAX, pt_SAM)
+
+#job::job({
+   # distance mat
+  pt_taxclass_bray = phyloseq::distance(pt_taxclass_phy, method = "bray")
+  pt_taxclass_bray_ord <- ordinate(pt_taxclass_phy, "NMDS", "bray")
+    ## PERMANOVA
+  pt_taxclass_bray_PA = adonis2(pt_taxclass_bray ~ taxclass_lab,
+       data = pt_taxclass_sam_df,
+       parallel = 4)
+  ## ANOSIM
+  pt_taxclass_bray_anosim = anosim(
+    pt_taxclass_bray,
+    pt_taxclass_sam_df$taxclass_lab,
+      distance = "bray",
+      parallel = 4,
+    permutations = 999
+  )
+  ## dispersion
+  pt_taxclass_bray_disp <- vegan::betadisper(pt_taxclass_bray, pt_taxclass_sam_df$taxclass_lab)
+  
+  permutest(pt_taxclass_bray_disp)
+```
+
+```{r Fig3D_pw_isolate_bray, fig.width=3, fig.height=3}
+pw_isolate_bray_df <- biomeUtils::meltDistanceToTable(pt_taxclass_phy,
+                                pt_taxclass_bray,
+                  name_dist_column = "bray") %>% 
+  # when the sample is compared to itself 
+  filter((genoMatchID_S1 == genoMatchID_S2)) %>% 
+  # these are pairwise so the values are the same in either direction
+  #distinct(genoMatchID_S1, .keep_all = TRUE) %>% 
+  filter(genoMatchID_S1 %in% SS73_samplist$genoMatchID &
+           genoMatchID_S2 %in% SS73_samplist$genoMatchID) %>% 
+  select(genoMatchID = genoMatchID_S1, 
+         taxclass_S1, taxclass_S2, bray) %>% 
+  mutate(group = factor(taxclass_S1,
+                      levels = c("mp_0.20", "mp_0.05", "mp_0.05_local"),
+                      labels = c("default", "global", "local")))
+
+pw_isolate_bray_default <-pw_isolate_bray_df %>%  
+  # keep if taxclass_S1 is compared to the default
+  filter(taxclass_S2 == "mp_0.20")
+
+
+pw_isolate_bray_p <- pw_isolate_bray_default %>% 
+  ungroup() %>% 
+  mutate() %>% 
+  ggplot(aes(x= group, y=bray, color=group)) +
+  geom_jitter(
+    height = 0,
+    shape =19,
+    alpha = 0.7)+
+  ggpubr::geom_pwc(
+    tip.length = 0.01,
+    method = "wilcox_test",
+    label = "{p.adj.signif}",
+    p.adjust.method = "BH",
+    label.size = 5/ggplot2::.pt,
+    y.position = c(0.18),
+    hide.ns = TRUE
+  )+
+  scale_y_continuous(
+    expand = expansion(c(0.1,0.1)),
+    limits = c(0, 0.20)
+    )+
+  scale_color_manual(
+     values = c(
+       #"gray30",
+       tax_class_cols[["Metaphlan4_statq_0.05"]],
+        tax_class_cols[["Metaphlan4_local_statq_0.05"]])
+   )+
+  labs(
+    x = "",
+    y = "Bray Curtis<sub>vs. default</sub>"
+  )+
+  sophie_theme()+
+  theme(
+    aspect.ratio = 1,
+    legend.position = "none"
+  )
+
+pw_isolate_bray_p+
+  labs(tag = "Fig 3D") +
+  tag_theme()
+  
+```
+
+```{r Fig3E_isolate_statq_qpcr, fig.width=3, fig.height=3, fig.cap = "Pairwise Bray-Curtis Dissimilarity of the overall between local stat_q adjustment (0.05) and default (0.20)."}
+test_hmm_df <- collect_tests_df %>%
+  left_join(SS73_samplist %>% select(genoMatchID, sample_id)) %>% 
+  select(genoMatchID, sample_id, mlst_clade, ST, Cdiff_16S, tcdB, clin_dx) %>% 
+  select(-tcdB) %>% 
+  left_join(hmm_heat_sum) 
+
+test_hmm_df %>% 
+  group_by(clin_dx) %>% 
+  summarize(n=n_distinct(sample_id))
+
+
+test_hmm_df %>% 
+  group_by(#tcdA
+           tcdB, 
+           clin_dx
+           ) %>% 
+  summarize(n=n_distinct(sample_id),
+            .groups = "drop")
+
+
+mp_clintest_df = test_hmm_df %>% 
+  left_join(cdiff_qpcr %>% 
+            distinct(genoMatchID, mean.copies)) %>% 
+  left_join(isolate_hd_cdiff_detect %>% 
+              select(genoMatchID, mp_0.20, mp_0.05, mp_0.05_local))
+
+mp_clintest_df %>%
+  mutate(cobas = ifelse(clin_dx == "Y", 1, 0)) %>%
+  select(genoMatchID, mean.copies, 
+         tcdB,
+         cobas, 
+         mp_0.20, 
+         #mp_0.05, 
+         mp_0.05_local) %>%
+  pivot_longer(cobas:mp_0.05_local,
+    names_to = "test",
+    values_to = "result"
+  ) %>%
+  mutate(
+    result = factor(result,
+      levels = c(0, 1),
+      labels = c("undetected", "detected")
+    ),
+    test = factor(test,
+      levels = c("cobas", "mp_0.20", "mp_0.05", "mp_0.05_local"),
+      labels = c("Cobas", "default", "global 0.05", "local 0.05")
+    )
+  ) %>%
+  filter(!is.na(test)) %>%
+  ggplot(aes(x = test, y = mean.copies, fill = result)) +
+  geom_boxplot(
+    outlier.size = 0.5
+  ) +
+  scale_y_continuous(
+    expand = expansion(c(0.1,0.1)),
+    trans = "log10",
+    breaks = scales::log_breaks(base = 10, n = 8),
+    labels = scales::label_log(base = 10)
+  )+
+  ggpubr::geom_pwc(
+    tip.length = 0.01,
+    method = "wilcox_test",
+    label = "{p.adj.signif}",
+    p.adjust.method = "BH",
+    label.size = 5/ggplot2::.pt,
+    #y.position = c(1e9, 1.1e9),
+    hide.ns = TRUE
+  )+
+  labs(
+    x = "",
+    y = "*C\\. difficile* 16S copies mg<sup>-1</sup>"
+  ) +
+  sophie_theme() +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_blank()
+  )-> isolate_statq_qpcr_p 
+
+
+isolate_statq_qpcr_p+
+  labs(tag = "Fig 3E") +
+  tag_theme()
+```
+
+```{r S5A_hd_isolate_taxplots, fig.width = 7, fig.height = 4, fig.cap= "Genus-level taxonomy (top), detection of *C. difficile* 16S with PCR (middle), and MetaPhlAn4 estimates of  *C. difficile* RA (bottom) of HD (n=21)and Cx positive samples (n=73) using default MetaPhlAn4 (0.20)."}
+# default
+## taxplot setup ------
+samp_meta = sampleset %>%
+  filter(grepl("HD_DFI", genoMatchID) | 
+           genoMatchID %in% SS73_samplist$genoMatchID) %>% 
+  left_join(SS73_samplist %>% 
+              select(genoMatchID, culture_id)) %>% 
+  mutate(
+    culture_id = ifelse(is.na(culture_id),
+                        str_remove(genoMatchID, "DFI_0"), culture_id)
+    ) %>% 
+# taxplot requires a group_var
+  mutate(group_var = ifelse(grepl("HD_DFI", genoMatchID), 
+                            "Healthy Donors", 
+                            "Culture positive patient samples")) %>% 
+  # keep genoMatchID + any additional data that might be used in plot
+  select(genoMatchID = culture_id, old_id = genoMatchID, Cdiff_16S, tcdB, group_var)
+
+cdiff_ra_max = mp_default_tax_df %>% 
+  filter(grepl("HD_DFI", genoMatchID) | 
+           genoMatchID %in% SS73_samplist$genoMatchID) %>% 
+  dplyr::rename(old_id = genoMatchID) %>% 
+  left_join(samp_meta %>% 
+              select(old_id, genoMatchID)) %>% 
+  filter(taxid == 1496) %>% 
+  summarize(cdiff_max = max(pctseqs)) %>% 
+  unlist()
+
+samp_rank = sort(samp_meta$genoMatchID)
+
+samp_plotwidth = length(unique(samp_meta$genoMatchID))+2
+
+## taxplots -------
+## mp4 
+samp_mp_taxdf <- mp_default_tax_df %>% 
+  filter(grepl("HD_DFI", genoMatchID) | 
+           genoMatchID %in% SS73_samplist$genoMatchID) %>% 
+  dplyr::rename(old_id = genoMatchID) %>% 
+  left_join(samp_meta %>% 
+              select(old_id, genoMatchID)) 
+
+samp_mp_default_taxplot <- taxplot(samp_mp_taxdf, 
+                                   samp_meta, 
+                                   samp_rank) +
+  sophie_theme()+
+  theme(
+    axis.ticks.x = element_blank(),
+    #axis.text.y = element_text(size = 12),
+    axis.text.x = element_blank()
+  )+
+  labs(tag = "Fig S5A") +
+  tag_theme()
+
+samp_mp_default_cdiff_RA_plot <- taxid_RA_plot(samp_mp_taxdf,
+                                             samp_meta, samp_rank, 
+                                             1496, "#e0218a") +
+    # set scale so the plot y limits are consistent
+  scale_y_continuous(limits = c(0, cdiff_ra_max[[1]]))+
+  labs(
+    y = "*C. difficile* %"
+  )+
+  sophie_theme()+
+  theme(
+    axis.title.y = ggtext::element_markdown(),
+    strip.text.x = element_blank()
+  )
+
+
+# heatmap of cdiff16S PCR
+heat_samp_cdiff_pcr <- samp_meta %>%
+  mutate(
+    genoMatchID = factor(
+      genoMatchID, 
+      levels = samp_rank),
+    Cdiff_16S = factor(
+      Cdiff_16S, 
+      levels = c("N", "Y"),
+      labels = c("*C.difficile* 16S-", "*C.difficile* 16S+")),
+    ) %>%
+  ggplot(aes(x=genoMatchID, y = 1, fill = Cdiff_16S)) +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_x_discrete(expand = c(0,0)) +
+  geom_tile(
+    stat = "identity",
+    color = "black",
+    width = 0.9,
+    height = 0.9
+    ) +
+  scale_fill_manual( 
+    values = c(
+      "*C.difficile* 16S-" = "#354f52",
+      "*C.difficile* 16S+" = "#e5383b"
+    ))+
+  labs(
+    y = "PCR"
+  )+
+  facet_grid(cols = vars(group_var),
+             scales = "free_x",
+             space = "free")+
+  sophie_theme()+
+  theme(
+    #axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text.y = element_blank(),
+    axis.title = element_blank(),
+    legend.text = ggtext::element_markdown()
+    #axis.title.y = element_text(size = 8)
+  )
+
+
+## merge plots
+plot_heights = c(2, 0.15, 1)
+
+
+# add cdiff pcr detection
+# use yingtools ggstack to make taxplot
+
+yingtools2::gg.stack2(
+  # taxplot
+  samp_mp_default_taxplot + 
+    theme(legend.position="none"),
+  # pcr result
+  heat_samp_cdiff_pcr + 
+    theme(
+      strip.text = element_blank(),
+      legend.position="none"), 
+  # cdiff RA with names
+  samp_mp_default_cdiff_RA_plot + 
+    theme(
+      legend.position="none",
+      axis.text.x = element_text(hjust = 1)
+      ),
+  # settings to stack
+  heights= plot_heights,
+  gap = unit(0, "pt")) +
+  theme(
+    axis.text.x = element_text(size = 6, angle = 90)
+  ) -> samp_mp_default_full_p
+
+samp_mp_default_full_p
+
+```
+
+```{r samps_taxclass_phy}
+# for all 484 pt samples
+samps_sampleset = sampleset %>% 
+  filter(grepl("HD_DFI", genoMatchID) |
+           genoMatchID %in% SS73_samplist$genoMatchID)
+
+# the various classifiers have different output species_lab --> artificially looks unique/different
+# use the 
+samps_taxclass_df <- bind_rows(mp_default_tax_df %>% 
+                              filter(relative_abundance>0) %>% 
+                              mutate(taxclass = "mp_0.20"),
+                            mp_stat_0.05_tax_df %>% 
+                              filter(relative_abundance>0) %>% 
+                              mutate(taxclass = "mp_0.05"),
+                            mp_local_stat_0.05_tax_df %>% 
+                              filter(relative_abundance>0) %>% 
+                              mutate(taxclass = "mp_0.05_local")
+                            ) %>%
+  mutate(mat_id = paste0(genoMatchID, "-", taxclass),
+         spec_id = paste0(Kingdom, "|", 
+                          Phylum, "|",
+                          Class, "|",
+                          Order, "|",
+                          Family, "|",
+                          Genus,"|",
+                          Species
+                          )) 
+samps_taxclass_df <- samps_taxclass_df %>% 
+  # only keep the healthy donors
+  filter(genoMatchID %in% samps_sampleset$genoMatchID)
+
+length(unique(samps_taxclass_df$genoMatchID))
+
+# build a phyloseq to store information
+samps_taxclass_otu_mat <- samps_taxclass_df %>% 
+  # species_lab = reported taxa from mp
+  group_by(mat_id, spec_id) %>% 
+  # summarize RA to the NCBI taxlvl information
+  summarize(new_ra = sum(relative_abundance)) %>% 
+  pivot_wider(names_from = mat_id, 
+              values_from = new_ra,
+              values_fill = 0) %>% 
+  column_to_rownames(var = "spec_id") %>% 
+  as.matrix()
+
+dim(samps_taxclass_otu_mat)
+
+samps_taxclass_tax_mat <- samps_taxclass_df %>% 
+  # species_lab = reported taxa from mp
+  select(spec_id, Kingdom, Phylum, Class, Order, Family, Genus, Species) %>% 
+  distinct() %>% 
+  column_to_rownames(var = "spec_id") %>% 
+  as.matrix()
+
+dim(samps_taxclass_tax_mat)
+
+samps_taxclass_sam_df <- samps_taxclass_df %>% 
+  select(sample=mat_id, genoMatchID, taxclass, seq_id) %>% 
+  distinct() %>% 
+  mutate(
+    pat_type = ifelse(grepl("HD_DFI", genoMatchID), "HD", "Cx pos pt"),
+    group_lab = paste(pat_type, taxclass)
+  ) %>% 
+  left_join(study.redcap.TOTAL %>% 
+              select(genoMatchID, db, count)) %>% 
+  left_join(all_pcr_samps_data) %>% 
+  left_join(SS73_samplist %>% 
+              select(genoMatchID, culture_id, sample_id, 
+                     mlst_clade, ST)) %>% 
+  mutate(sample_id = ifelse(pat_type == "HD", 
+                            str_remove(genoMatchID, "DFI_0"),
+                            sample_id),
+         culture_id = ifelse(pat_type == "HD", 
+                            str_remove(genoMatchID, "DFI_0"),
+                            culture_id),
+         ) %>% 
+  # factor
+  mutate(Cdiff_16S = factor(Cdiff_16S,
+                            levels = c("N", "Y"),
+                            labels = c("16S-", "16S+")),
+         tcdB = factor(tcdB,
+                            levels = c("N", "Y"),
+                            labels = c("tcdB-", "tcdB+")),
+         pcr = paste(Cdiff_16S, tcdB)) %>% 
+  column_to_rownames(var = "sample")
+
+samps_OTU = otu_table(samps_taxclass_otu_mat, taxa_are_rows = TRUE)
+samps_TAX = tax_table(samps_taxclass_tax_mat)
+samps_SAM = sample_data(samps_taxclass_sam_df)
+
+samps_taxclass_phy <- phyloseq(samps_OTU,samps_TAX, samps_SAM)
+
+#job::job({
+   # distance mat
+  samps_taxclass_bray = phyloseq::distance(samps_taxclass_phy, method = "bray")
+  samps_taxclass_bray_ord <- ordinate(samps_taxclass_phy, "NMDS", "bray")
+    ## PERMANOVA
+  samps_taxclass_bray_PA = adonis2(samps_taxclass_bray ~ group_lab,
+       data = samps_taxclass_sam_df,
+       parallel = 4)
+  
+  samps_taxclass_L1norm = phyloseq::distance(samps_taxclass_phy, 
+                                               method = "manhattan")
+  samps_taxclass_L1norm_ord <- ordinate(samps_taxclass_phy, "NMDS", "bray")
+```
+
+```{r S5B_hd_isolate_richness, fig.width = 6, fig.height = 4, fig.cap= "Number of reported species of HD and Cx positive fecal samples across compared MetaPhlan4 stat_q settings."}
+
+samps_alpha <- microbiome::alpha(samps_taxclass_phy, index = "all") %>%
+  select(
+    nspec = observed, 
+    InvSimpson = diversity_inverse_simpson, 
+    Shannon = diversity_shannon) %>% 
+  mutate(split_col = rownames(.)) %>% 
+  separate(split_col,
+           sep = "-",
+           into = c("genoMatchID", "taxclass")) %>% 
+  left_join(samps_taxclass_sam_df %>% 
+              select(genoMatchID, culture_id, sample_id, pat_type))
+
+samps_alpha %>% 
+  mutate(
+    taxclass = factor(taxclass,
+                      levels = c("mp_0.20", "mp_0.05", "mp_0.05_local"),
+                      labels = c("default", "global 0.05", "local 0.05")),
+    pat_type = factor(pat_type,
+                           levels = c("HD", "Cx pos pt"),
+                           labels = c("HD", "Cx +"))) %>% 
+  ggplot(aes(x = taxclass, y = nspec, fill = pat_type))+
+  geom_boxplot()+
+  ggpubr::geom_pwc(
+    tip.length = 0.01,
+    method = "wilcox_test",
+    label = "{p.adj.signif}",
+    p.adjust.method = "BH",
+    label.size = 5 / ggplot2::.pt,
+    bracket.nudge.y = 0.1,  # A smaller nudge
+    y.position = c(265),
+    hide.ns = TRUE
+  ) +
+  scale_y_continuous(
+    limits = c(0,300),
+    expand = expansion(c(0.01, 0.1))
+  )+
+  scale_fill_manual(
+    values = c("#56BCC2","#E87D72")
+  )+
+  labs(
+    x = "",
+    y = "N Species"
+  )+
+  sophie_theme()+
+  theme(
+    aspect.ratio = 0.7,
+    legend.title = element_blank()
+  )-> samps_nspec_p
+
+samps_nspec_p +
+  labs(tag = "Fig S5B")+
+  tag_theme()
+
+```
+
+```{r S5C_hd_isolate_invsimpson, fig.width = 6, fig.height = 4, fig.cap= "Alpha diversity measured by Inverse simpson of HD and Cx positive fecal samples across compared MetaPhlan4 stat_q settings."}
+samps_alpha %>% 
+  mutate(
+    taxclass = factor(taxclass,
+                      levels = c("mp_0.20", "mp_0.05", "mp_0.05_local"),
+                      labels = c("default", "global 0.05", "local 0.05")),
+    pat_type = factor(pat_type,
+                           levels = c("HD", "Cx pos pt"),
+                           labels = c("HD", "Cx +"))) %>% 
+  ggplot(aes(x = taxclass, y = InvSimpson, fill = pat_type))+
+  geom_boxplot()+
+  ggpubr::geom_pwc(
+    tip.length = 0.01,
+    method = "wilcox_test",
+    label = "{p.adj.signif}",
+    p.adjust.method = "BH",
+    label.size = 5 / ggplot2::.pt,
+    bracket.nudge.y = 0.1,  # A smaller nudge
+      y.position = c(32),
+    hide.ns = TRUE
+  ) +
+  scale_y_continuous(
+    limits = c(0,35),
+    expand = expansion(c(0.01, 0.1))
+  )+
+  scale_fill_manual(
+    values = c("#56BCC2","#E87D72")
+  )+
+  labs(
+    x = "",
+    y = "Inverse Simpson"
+  )+
+  sophie_theme()+
+  theme(
+    aspect.ratio = 0.7,
+    legend.title = element_blank()
+  )-> samps_invsimp_p
+
+samps_invsimp_p +
+  labs(tag = "Fig S5C")+
+  tag_theme()
+```
+
+## Optimization of *C. difficile* strain-level detection by StrainPhlAn4
+
+```{r set_tree_load}
+## strainphlan distmat -----
+## distances collected from branch lengths of cdiff tree by pyphlan
+## fig5 distmat
+tree_dist <- read.csv(here(data_PATH, "strainphlan","strainphlan_30000_dist_20250205.csv")) %>% select(-X)
+
+
+## strainphlan tree -------
+### fig5 tree 
+set_tree_FILE = list.files(
+  here(data_PATH,"strainphlan"),
+  pattern = "RAxML_bestTree.t__GGB4453.StrainPhlAn4.tre",
+  recursive = FALSE,
+  full.names = TRUE
+)
+
+tree_meta_FILE = list.files(
+  data_PATH,
+  pattern = "df_meta_strainphlan.csv",
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+set_tree <- ape::read.tree(set_tree_FILE)
+
+mock_pts <- tibble(
+  sampid = c("LD-347.04", "LD-316.01", "LD-200.01","LD-191.01", "LD-344.01"),
+  genoMatchID = c("LD_347_004", "LD_316_001", "LD_200_001","LD_191_001", "LD_344_001"),
+  samp_label = c("Patient1", "Patient2","Patient3","Patient4","Patient5")
+)
+
+set_tree_meta <- read.csv(tree_meta_FILE)%>% 
+  mutate(pt_id = factor(background,
+                        levels = mock_pts$sampid,
+                        labels = mock_pts$samp_label
+                        ),
+         cdc = str_extract(name1, "CDI-[0-9]{2}")) %>% 
+  # standardize labeling of mlst
+  mutate(mlst = paste0("ST", as.numeric(str_remove(mlst, "ST"))),
+         tree_lab = paste0(pt_id, " ", cdc, " (", mlst,")")) %>% 
+  mutate(tree_lab = str_remove_all(tree_lab, "NA "))
+```
+
+```{r S8_sp_set_tree, fig.height=20, fig.width =20, fig.cap = "Maximum-likelihood optimized StrainPhlAn4 phylogenetic tree output of CDC *C. difficile* isolate spike-ins into patient stool metagenomic samples (n=5). Genomes were separated into three sets as previously described: set 1 (green), set 2 (red), and set 3 (blue). For each spike-in, the *C. difficile* genome were randomly sampled at 30,000 (1x) or 60,000 (2x) reads while the reference genomes (gray) were sampled at 300,000 reads (10x) using optimized settings."}
+
+# strain colors
+cdc_colors = c("CDI-01"= "#A9D6E5", 
+               "CDI-05"="#93BEDF", 
+               "CDI-06" = "#449BC0",
+               "CDI-10"="#2E7AB1",
+               "CDI-26" = "#8598CA", 
+               "CDI-29" = "#39B6B4",#st1 colors
+               "CDI-12" = "#6FD08C",
+               "CDI-04" = "#CB8589",
+               "CDI-07" ="#ffb4a2",
+               "CDI-11"="#cdb4db"
+               )
+
+## use for highlights
+set_tips <- data.frame(strain = set_tree$tip.label) %>%
+  # add the ST information to the tree
+  left_join(set_tree_meta %>% 
+              mutate(strain = ifelse(grepl("Test", type), 
+                                     paste0(sample_id, "_R1"),
+                                     sample_id)), 
+            by = "strain") %>% 
+  replace_na(list(cdiff_reads = 0))
+
+
+# add information for highlights
+set_hilight <- as_tibble(set_tree) %>% 
+  #select(node, label) %>% 
+  left_join(set_tips %>% 
+              dplyr::rename("label"="strain"), 
+            by = "label") %>% 
+  select(node, label = tree_lab, old.label = label, name1, set,
+         type, clade, cdc, mlst, cdiff_reads, pt_id)
+
+
+# add helper data to tree
+set_phy = as.phylo(set_tree)
+# change tip label
+set_phy$tip.label = set_tips$tree_lab
+#Clade2_phy$tip.label = new_tips$name1
+
+# add the extra data
+set_tree_join = full_join(set_phy,
+                        set_hilight, 
+                        by = c("node"))
+
+
+set_tree_p = ggtree(set_tree_join,
+                    #layout = "circular"
+                    )   +
+  geom_tippoint(
+    aes(fill = clade),
+    size = 0.5,
+    shape = 21
+  )+
+  scale_fill_manual(
+    "Clade",
+    values = c(
+      "Clade1" = cdiff_clade_cols[[1]],
+      "Clade2" = cdiff_clade_cols[[2]], 
+      "Clade3"= cdiff_clade_cols[[3]],
+      "Clade4"= cdiff_clade_cols[[4]],
+      "Clade5"= cdiff_clade_cols[[5]], 
+      "CladeC-I"= cdiff_clade_cols[[6]], 
+      "CladeC-II"= cdiff_clade_cols[[6]], 
+      "CladeC-III"= cdiff_clade_cols[[6]]
+      )
+  ) +
+  new_scale_fill() + # new
+  geom_tiplab(
+      aes(color = type,
+          fill = ifelse(!is.na(pt_id), cdc, NA)),
+      geom = "label",
+      size = 5/ggplot2::.pt,
+      align = FALSE,
+      label.size = 0,
+      offset = 0,
+      check.overlap = TRUE
+      #show.legend = FALSE
+      ) +
+  scale_color_manual(
+    values=c(
+        "Reference" = "gray50", 
+        "Reference Strain" = "gray50", 
+        "Test 60,000" = "red", 
+        "Test 30,000" = "black"),
+    guide = "none")+
+  scale_fill_manual(
+    values = cdc_colors,
+    na.value = "transparent",
+    guide = "none"
+  )+
+  geom_treescale(x=0.1, y=60,
+                 fontsize =6/ggplot2::.pt)+
+  theme(
+    # remove weird lines
+    axis.line = element_blank(),
+    # move legend
+    legend.title = element_text(size = 7), 
+    legend.text = element_text(size=6),
+    legend.position = c(0,0.6), 
+    legend.direction = "vertical")
+
+set_tree_p+
+  labs(tag = "Fig S8")+
+  tag_theme()
+
+
+```
+
+
+```{r Fig4A_set1_tree, fig.width=6, fig.height=6, fig.cap = "Maximum likelihood optimized StrainPhlAn4 phylogenetic tree output of identical ST1 *C. difficile* strains spiked into patient stool metagenomic samples (n=5). For each spike-in, the *C. difficile* genome were randomly sampled at 30,000 reads while the reference genomes was sampled at 300,000 reads."}
+## fig 5D zoom in on Clade2
+#plot(set_tree)
+set1_meta <- set_tree_meta %>% 
+  filter((set == "Set1" & type == "Test 30,000") | 
+           type == "Reference Strain") %>% 
+  mutate(strain = ifelse(grepl("Test", type), 
+                         paste0(sample_id, "_R1"), sample_id))
+
+set1_keep <-  tibble(tip = set_tree$tip.label) %>%
+  filter(#grepl("CDI", tip) | 
+           tip %in% set1_meta$strain) %>%
+  pull()
+
+set1_prune_tree <- ape::drop.tip(set_tree, 
+                                 setdiff(set_tree$tip.label, set1_keep),
+                                 trim.internal = TRUE)
+
+## use for highlights
+set1_tips <- data.frame(strain = set1_prune_tree$tip.label) %>%
+  # add the ST information to the tree
+  left_join(set_tree_meta %>% 
+              mutate(strain = ifelse(grepl("Test", type), paste0(sample_id, "_R1"), sample_id)), 
+            by = "strain") %>% 
+  replace_na(list(cdiff_reads = 0))
+
+
+# add information for highlights
+set1_hilight <- as_tibble(set1_prune_tree) %>% 
+  #select(node, label) %>% 
+  left_join(set1_tips %>% 
+              dplyr::rename("label"="strain"), 
+            by = "label") %>% 
+  select(node, label = tree_lab, old.label = label, name1, set,
+         type, clade, cdc,mlst, cdiff_reads, pt_id)
+
+
+# add helper data to tree
+set1_phy = as.phylo(set1_prune_tree)
+# change tip label
+set1_phy$tip.label = set1_tips$tree_lab
+#Clade2_phy$tip.label = new_tips$name1
+
+# add the extra data
+set1_tree_join = full_join(set1_phy,
+                        set1_hilight, 
+                        by = c("node"))
+
+set1_tree = ggtree(set1_tree_join)   +
+  geom_tippoint(
+    aes(fill = clade),
+    size = 1,
+    shape = 21
+  )+
+  scale_fill_manual(
+    "Clade",
+    values = c(
+      "Clade1" = cdiff_clade_cols[[1]],
+      "Clade2" = cdiff_clade_cols[[2]], 
+      "Clade3"= cdiff_clade_cols[[3]],
+      "Clade4"= cdiff_clade_cols[[4]],
+      "Clade5"= cdiff_clade_cols[[5]], 
+      "CladeC-I"= cdiff_clade_cols[[6]], 
+      "CladeC-II"= cdiff_clade_cols[[6]], 
+      "CladeC-III"= cdiff_clade_cols[[6]]
+      )
+  ) +
+  new_scale_fill() + # new
+  geom_tiplab(
+      aes(color = type,
+          fill = ifelse(!is.na(pt_id), cdc, NA)),
+      geom = "label",
+      size = 8/ggplot2::.pt,
+      align = FALSE,
+      label.size = 0,
+      offset = 0.001,
+      #show.legend = FALSE
+      ) +
+  ggplot2::xlim(0, 2)+
+  scale_color_manual(
+    values=c(
+        "Reference" = "gray50", 
+        "Reference Strain" = "gray25", 
+        "Test 60,000" = "gray", 
+        "Test 30,000" = "black"),
+    guide = "none")+
+  scale_fill_manual(
+    values = cdc_colors,
+    na.value = "transparent",
+    guide = "none"
+  )+
+  geom_treescale(x=0, y=10,
+                 fontsize = 8/ggplot2::.pt)+
+  theme(
+    # remove weird lines
+    axis.line = element_blank(),
+    # move legend
+    legend.title = element_text(size = 7), 
+    legend.text = element_text(size=6),
+    legend.position = c(0.15,0.6), 
+    legend.direction = "vertical")
+
+set1_tree+
+  labs(tag = "Fig 4A") +
+  tag_theme()
+```
+
+
+```{r Fig4B_set1_alpha, fig.width=4, fig.height=3, fig.cap="Pairwise branch length distances between *in silico* samples and the reference genome (bars) compared with the species-level Inverse Simpson metric of the metagenomic background (points)."}
+mp_df <- clinsamp_tax_list$mp_local_stat_0.05_tax_df
+
+
+mp_df <- mp_df %>% 
+  filter(genoMatchID %in% mock_pts$genoMatchID)
+
+# species level alpha -> need to group unclassifieds together
+## taxid is at the species level
+alpha_set1 <- mp_df %>% 
+  ungroup() %>% 
+  select(genoMatchID, taxid, pctseqs) %>% 
+  group_by(genoMatchID, taxid) %>% 
+  summarise(pctseqs = sum(pctseqs), .groups = "drop") %>% 
+  group_by(genoMatchID) %>% 
+  summarise(shannon = diversity(pctseqs, index = "shannon", 
+                                base = exp(1)),
+            invsimpson = diversity(pctseqs, index = "invsimpson", 
+                                base = exp(1)),
+            .groups = "drop") %>% 
+  mutate(pt_id = factor(genoMatchID,
+                        levels = mock_pts$genoMatchID,
+                        labels = mock_pts$samp_label
+                        ))
+
+# set 1 samples 
+set_1 = tree_dist %>% 
+  filter(set == "Set1") %>% 
+  filter(grepl("CDI-01", name) &
+           grepl("CDI-01", name2)) %>% 
+  left_join(set_tree_meta %>% 
+              select(sample1 = sample_id, pt_id1=pt_id, clade1=clade, mlst1=mlst))%>% 
+  left_join(set_tree_meta %>% 
+              select(sample2 = sample_id, pt_id2=pt_id,clade2=clade, mlst2=mlst)) 
+
+# set 1 to reference strain
+set_1_ref_dist = set_1 %>% 
+  filter(type2 == "Reference Strain") %>% 
+  select(name, type, set, clade1, mlst1, pt_id = pt_id1,
+         name2, type2, clade2, mlst2, dist ) %>% 
+  left_join(alpha_set1 %>% 
+              select(pt_id, invsimpson))
+
+
+# the phylo distances are too small compared to invsimpson so need to scale
+scale_factor <- 1e-4  
+
+set_1_p = set_1_ref_dist %>% 
+  ggplot(aes(x = pt_id, y = dist)) +
+  geom_bar(
+    stat = "identity",
+    color = "black",
+    fill = "#154c79"
+  ) +
+  geom_point(
+    aes(x = pt_id, y = invsimpson * scale_factor),  # Scale down invsimpson
+    color = "black",
+    fill = "#5cc3eb",
+    shape = 21,
+    size = 3,
+    inherit.aes = FALSE
+  ) +
+  scale_y_continuous(
+    limits = c(0, 0.0015),  
+    expand = expansion(mult = c(0, 0.01)),  
+    sec.axis = sec_axis(
+      trans = ~ . / scale_factor,  # Reverse the scaling
+      name = "Inverse Simpson",
+      breaks = seq(0, 15, 5)
+    )
+  ) +
+  labs(
+    x= "",
+    y = "Distance to Reference"
+  )+
+  sophie_theme()
+
+set_1_p+
+  labs(tag = "Fig 4B") +
+  tag_theme()
+
+```
+
+```{r Fig4C_set2_tree, fig.width=6, fig.height=6, fig.cap = "Maximum likelihood optimized StrainPhlAn4 phylogenetic tree output of 5 different *C. difficile* STs (pink) spiked into patient stool metagenomic samples (n=5). For each spike-in, the *C. difficile* genome was randomly sampled at 30,000 reads while the reference genomes were sampled at 300,000 reads."}
+#plot(set_tree)
+set2_meta <- set_tree_meta %>% 
+  # set2 and set3 were swapped
+  filter((set == "Set2" & type == "Test 30,000") | 
+           type == "Reference Strain") %>% 
+  mutate(strain = ifelse(grepl("Test", type), 
+                         paste0(sample_id, "_R1"), sample_id))
+
+set2_keep <-  tibble(tip = set_tree$tip.label) %>%
+  filter(#grepl("CDI", tip) | 
+           tip %in% set2_meta$strain) %>%
+  pull()
+
+set2_prune_tree <- ape::drop.tip(set_tree, 
+                                 setdiff(set_tree$tip.label, set2_keep),
+                                 trim.internal = TRUE)
+
+## use for highlights
+set2_tips <- data.frame(strain = set2_prune_tree$tip.label) %>%
+  # add the ST information to the tree
+  left_join(set_tree_meta %>% 
+              mutate(strain = ifelse(grepl("Test", type), paste0(sample_id, "_R1"), sample_id)), 
+            by = "strain") %>% 
+  replace_na(list(cdiff_reads = 0))
+
+
+# add information for highlights
+set2_hilight <- as_tibble(set2_prune_tree) %>% 
+  #select(node, label) %>% 
+  left_join(set2_tips %>% 
+              dplyr::rename("label"="strain"), 
+            by = "label") %>% 
+  select(node, label = tree_lab, old.label = label, name1, set,
+         type, clade,cdc,  mlst, cdiff_reads, pt_id)
+
+
+# add helper data to tree
+set2_phy = as.phylo(set2_prune_tree)
+# change tip label
+set2_phy$tip.label = set2_tips$tree_lab
+#Clade2_phy$tip.label = new_tips$name1
+
+# add the extra data
+set2_tree_join = full_join(set2_phy,
+                        set2_hilight, 
+                        by = c("node"))
+
+set2_tree = ggtree(set2_tree_join)   +
+  geom_tippoint(
+    aes(fill = clade),
+    size = 1,
+    shape = 21
+  )+
+  scale_fill_manual(
+    "Clade",
+    values = c(
+      "Clade1" = cdiff_clade_cols[[1]],
+      "Clade2" = cdiff_clade_cols[[2]], 
+      "Clade3"= cdiff_clade_cols[[3]],
+      "Clade4"= cdiff_clade_cols[[4]],
+      "Clade5"= cdiff_clade_cols[[5]], 
+      "CladeC-I"= cdiff_clade_cols[[6]], 
+      "CladeC-II"= cdiff_clade_cols[[6]], 
+      "CladeC-III"= cdiff_clade_cols[[6]]
+      )
+  ) +
+  new_scale_fill() + # new
+  geom_tiplab(
+      aes(color = type,
+          fill = ifelse(!is.na(pt_id), cdc, NA)),
+      geom = "label",
+      size = 8/ggplot2::.pt,
+      align = FALSE,
+      label.size = 0,
+      offset = 0.002,
+      #show.legend = FALSE
+      ) +
+  ggplot2::xlim(0, 2)+
+  scale_color_manual(
+    values=c(
+        "Reference" = "gray50", 
+        "Reference Strain" = "gray25", 
+        "Test 60,000" = "gray", 
+        "Test 30,000" = "black"),
+    guide = "none")+
+  scale_fill_manual(
+    values = cdc_colors,
+    na.value = "transparent",
+    guide = "none"
+  )+
+  geom_treescale(x=0, y=11,
+                 fontsize = 8/ggplot2::.pt)+
+  theme(
+    # remove weird lines
+    axis.line = element_blank(),
+    # move legend
+    legend.title = element_text(size = 7), 
+    legend.text = element_text(size=6),
+    legend.position = c(0.15,0.6), 
+    legend.direction = "vertical")
+
+# rotate the node to be on top
+set2_tree= ggtree::rotate(set2_tree, 
+         MRCA(set2_tree, "Patient4 CDI-12 (ST42)", "CDI-21 (ST42)"))
+
+set2_tree+
+  labs(tag = "Fig 4C") +
+  tag_theme()
+
+```
+
+```{r Fig4D_set3_tree, fig.width=6, fig.height=6, fig.cap = "Maximum likelihood optimized StrainPhlAn4 phylogenetic tree output of 5 different ST1 isolates spiked into patient stool metagenomic samples (n=5). For each spike-in, the *C. difficile* genome was randomly sampled at 30,000 reads while the reference genomes were sampled at 300,000 reads."}
+#plot(set_tree)
+set3_meta <- set_tree_meta %>% 
+  # set2 and set3 were swapped
+  filter((set == "Set3" & type == "Test 30,000") | 
+           type == "Reference Strain") %>% 
+  mutate(strain = ifelse(grepl("Test", type), 
+                         paste0(sample_id, "_R1"), sample_id))
+
+set3_keep <-  tibble(tip = set_tree$tip.label) %>%
+  filter(#grepl("CDI", tip) | 
+           tip %in% set3_meta$strain) %>%
+  pull()
+
+set3_prune_tree <- ape::drop.tip(set_tree, 
+                                 setdiff(set_tree$tip.label, set3_keep),
+                                 trim.internal = TRUE)
+
+## use for highlights
+set3_tips <- data.frame(strain = set3_prune_tree$tip.label) %>%
+  # add the ST information to the tree
+  left_join(set_tree_meta %>% 
+              mutate(strain = ifelse(grepl("Test", type), paste0(sample_id, "_R1"), sample_id)), 
+            by = "strain") %>% 
+  replace_na(list(cdiff_reads = 0))
+
+
+# add information for highlights
+set3_hilight <- as_tibble(set3_prune_tree) %>% 
+  #select(node, label) %>% 
+  left_join(set3_tips %>% 
+              dplyr::rename("label"="strain"), 
+            by = "label") %>% 
+  select(node, label = tree_lab, old.label = label, name1, set,
+         type, clade, cdc, mlst, cdiff_reads, pt_id)
+
+
+# add helper data to tree
+set3_phy = as.phylo(set3_prune_tree)
+# change tip label
+set3_phy$tip.label = set3_tips$tree_lab
+#Clade2_phy$tip.label = new_tips$name1
+
+# add the extra data
+set3_tree_join = full_join(set3_phy,
+                        set3_hilight, 
+                        by = c("node"))
+
+set3_tree = ggtree(set3_tree_join)   +
+  geom_tippoint(
+    aes(fill = clade),
+    size = 1,
+    shape = 21
+  )+
+  scale_fill_manual(
+    "Clade",
+    values = c(
+      "Clade1" = cdiff_clade_cols[[1]],
+      "Clade2" = cdiff_clade_cols[[2]], 
+      "Clade3"= cdiff_clade_cols[[3]],
+      "Clade4"= cdiff_clade_cols[[4]],
+      "Clade5"= cdiff_clade_cols[[5]], 
+      "CladeC-I"= cdiff_clade_cols[[6]], 
+      "CladeC-II"= cdiff_clade_cols[[6]], 
+      "CladeC-III"= cdiff_clade_cols[[6]]
+      )
+  ) +
+  new_scale_fill() + # new
+  geom_tiplab(
+      aes(color = type,
+          fill = ifelse(!is.na(pt_id), cdc, NA)),
+      geom = "label",
+      size = 8/ggplot2::.pt,
+      align = FALSE,
+      label.size = 0,
+      offset = 0.001,
+      #show.legend = FALSE
+      ) +
+  ggplot2::xlim(0, 2)+
+  scale_color_manual(
+    values=c(
+        "Reference" = "gray50", 
+        "Reference Strain" = "gray25", 
+        "Test 60,000" = "gray", 
+        "Test 30,000" = "black"),
+    guide = "none")+
+  scale_fill_manual(
+    values = cdc_colors,
+    na.value = "transparent",
+    guide = "none"
+  )+
+  geom_treescale(x=0, y=11,
+                 fontsize = 8/ggplot2::.pt)+
+  theme(
+    # remove weird lines
+    axis.line = element_blank(),
+    # move legend
+    legend.title = element_text(size = 7), 
+    legend.text = element_text(size=6),
+    legend.position = c(0.15,0.6), 
+    legend.direction = "vertical")
+
+set3_tree+
+  labs(tag = "Fig 3D") +
+  tag_theme()
+
+```
+
+
+```{r S6A_sp_param_default, fig.height=5, fig.width =6, fig.cap = "Number of correctly detected iterations (n=10) for each CDC *C.difficile* isolate using default StrainPhlan4 settings"}
+
+st_colors <- c(
+  "ST001" = "#0033CC", 
+  "ST002" = "#006633", 
+  "ST008" = "#660099",
+  "ST010" = "#CC0000",
+  "ST011" = "#FF6600",
+  "ST014" = "#336699",
+  "ST034" = "#663300",
+  "ST042" = "#990066",
+  "ST043" = "#66C2A5",
+  "ST067" = "#CC9900",
+  "ST110" = "#666699"
+)
+
+df_meta_strainphlan =  read.csv(tree_meta_FILE)
+
+dirs = list.dirs(here('data', 'strainphlan'), recursive = F)
+dirs = dirs[grepl('DFI.5_spikeins_cdc30_cdiffspecific*', dirs)]
+
+p_list = list()
+df_det_list = list()
+trees_list = list()
+
+for(i in 1:length(dirs)){
+  tree = ape::read.tree(here(dirs[[i]], 'strainphlan_output', 'RAxML_bestTree.t__GGB4453.StrainPhlAn4.tre'))
+  tree$tip.label = gsub("_R1", "", tree$tip.label)
+  params = gsub(".*\\/", '', dirs[[i]])
+  params = gsub("DFI.5_spikeins_", '', params)
+  
+  trees_list[[params]] = tree
+  
+  p_list[[params]] = ggtree(tree, 
+                            layout = "circular", 
+                            branch.length = 'none'
+                            ) %<+%
+    df_meta_strainphlan +
+      geom_tippoint(aes(color=name)) + 
+      paletteer::scale_color_paletteer_d("palettesForR::Windows") +
+      #geom_tiplab(aes(color=name)) +
+      xlim(0, 120) +
+    labs(color = '')
+  
+  df_det_list[[params]] = data.frame(sample_id = tree$tip.label) %>% 
+    filter(!grepl('difficile', sample_id)) %>% 
+    mutate(cdiff_strain = gsub('.*_', '', sample_id),
+           cdiff_strain = gsub('-[0-9]{2}$', '', cdiff_strain),
+           cdiff_strain = gsub('-[0-9]+$', '', cdiff_strain),
+           cdiff_strain = paste0("GCF_", cdiff_strain),
+           iteration = gsub('.*-', '', sample_id),
+           cdiff_reads = gsub('-[0-9]{2}$', '', sample_id),
+           cdiff_reads = gsub('.*-', '', cdiff_reads)) %>% 
+    mutate(cdiff_reads = factor(cdiff_reads, 
+                                levels = c('30000', 
+                                           '60000', 
+                                           '150000', 
+                                           '300000'))) %>% 
+     count(cdiff_strain, cdiff_reads) %>% 
+     mutate(type = params) |> 
+     left_join(cdc_meta %>% 
+                 mutate(name = paste0(strain, " (", mlst,")")) %>% 
+             #TODO: need to match a cdiff_strain somehow
+                select(cdiff_strain = assembly_accession, strain, name), 
+               by = 'cdiff_strain')
+  
+}
+
+df_det = do.call(rbind, df_det_list)
+
+sp_opt_df = df_det %>% 
+  mutate(type2 = case_when(
+    type == "cdc30_cdiffspecific_br50_mra2_mbc1_mbq30_mis0_snm20_150" ~ 'Breadth Threshold:50\nMin Reads Aligning:2',
+    type == "cdc30_cdiffspecific_br50_mra4_mbc1_mbq30_mis0_snm20_150" ~ 'Breadth Threshold:50\nMin Reads Aligning:4',
+    type == "cdc30_cdiffspecific_br50_mra8_mbc1_mbq30_mis0_snm20_150" ~ 'Breadth Threshold:50\nMin Reads Aligning:8',
+    type == "cdc30_cdiffspecific_br60_mra2_mbc1_mbq30_mis0_snm20_150" ~ 'Breadth Threshold:60\nMin Reads Aligning:2',
+    type == "cdc30_cdiffspecific_br60_mra4_mbc1_mbq30_mis0_snm20_150" ~ 'Breadth Threshold:60\nMin Reads Aligning:4',
+    type == "cdc30_cdiffspecific_br60_mra8_mbc1_mbq30_mis0_snm20_150" ~ 'Breadth Threshold:60\nMin Reads Aligning:8',
+    type == "cdc30_cdiffspecific_br70_mra2_mbc1_mbq30_mis0_snm20_150" ~ 'Breadth Threshold:70\nMin Reads Aligning:2',
+    type == "cdc30_cdiffspecific_br70_mra4_mbc1_mbq30_mis0_snm20_150" ~ 'Breadth Threshold:70\nMin Reads Aligning:4',
+    type == "cdc30_cdiffspecific_br70_mra8_mbc1_mbq30_mis0_snm20_150" ~ 'Breadth Threshold:70\nMin Reads Aligning:8',
+    type == "cdc30_cdiffspecific_br80_mra2_mbc1_mbq30_mis0_snm20_150" ~ 'Breadth Threshold:80\nMin Reads Aligning:2',
+    type == "cdc30_cdiffspecific_br80_mra4_mbc1_mbq30_mis0_snm20_150" ~ 'Breadth Threshold:80\nMin Reads Aligning:4',
+    type == "cdc30_cdiffspecific_br80_mra8_mbc1_mbq30_mis0_snm20_150" ~ 'Breadth Threshold:80\nMin Reads Aligning:8',
+    type == 'cdc30_cdiffspecific_150' ~ 'Default',
+    T ~ NA)) 
+
+sp_opt_df |> 
+  filter(type2 == 'Default') |> 
+  ggplot(aes(x = name, 
+             y = n, fill = 
+               cdiff_reads)) +
+  geom_col(position = position_dodge2(preserve = 'single'), 
+           color = 'black') +
+  theme_bw() +
+  scale_fill_manual(values = c('30000' = '#e2ffff', 
+                               '60000' = '#96c1ca', 
+                               '150000' = '#50859a', 
+                               '300000'= '#004c6d')) +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_y_continuous(
+    expand = expansion(0.0, 0.1),
+    breaks = scales::breaks_pretty()) +
+  facet_wrap(~type2, 
+             ncol = 3) +
+  labs(x = '', 
+       y = 'Iteration') +
+  sophie_theme() -> param_sp_default_opt_p
+
+param_sp_default_opt_p +
+  labs(tag = "Fig S6A") +
+  tag_theme()
+```
+
+```{r S6B_sp_param_test, fig.height=8, fig.width =12, fig.cap = "Number of correctly detected iterations (n=10) for each CDC *C.difficile* isolate across various StrainPhlan4 settings"}
+sp_opt_df |> 
+  filter(type2 != 'Default') |> 
+  ggplot(aes(x = name, y = n, fill = cdiff_reads)) +
+  geom_col(position = position_dodge2(preserve = 'single', 
+                                      width = 0.9), 
+           color = 'black'
+           ) +
+  theme_bw() +
+  scale_fill_manual(values = c('30000' = '#e2ffff', 
+                               '60000' = '#96c1ca', 
+                               '150000' = '#50859a', 
+                               '300000'= '#004c6d')) +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_y_continuous(
+    expand = expansion(0.0, 0.1),
+    breaks = scales::breaks_pretty()) +
+  facet_wrap(~type2, ncol = 3) +
+  labs(x = '', y = 'Iteration')+
+  sophie_theme()+
+  theme(
+    legend.position = "bottom"
+  ) -> param_sp_test_opt_p 
+
+param_sp_test_opt_p +
+  labs(tag = "Fig S6B") +
+  tag_theme()
+
+```
+
+
+## Improved within-species accuracy of StrainPhlAn4 *C. difficile* tracking
+
+```{r sp_clin_data}
+
+## ref
+df_meta_ref260 = read.csv(here('data', 'metadata_ref260.csv')) |> 
+  mutate(mlst = str_pad(mlst, 3, pad = "0"),
+         mlst = paste0('ST', mlst)) |> 
+  mutate(clade = gsub(' ', '', clade)) |> 
+  mutate(name = paste0(clade, ':', mlst, ':'))
+
+
+# Isolates Metadata
+df_meta_dfi_isolates = readxl::read_excel(here("data", "dfi_clinical_cdiff_isolates", "metadata.xlsx")) %>% 
+  left_join(read.csv(here("data", "dfi_clinical_cdiff_isolates", "SS.TAX.007-SS73_MLST_final.csv")) %>% 
+              select(seq_id, clade = mlst_clade, st = ST),
+            by = "seq_id") %>% 
+  filter(!is.na(st)) %>% 
+  mutate(mlst = str_pad(st, 3, pad = "0"),
+         mlst = paste0('ST', mlst)) |> 
+  mutate(clade = paste0('Clade', clade)) |> 
+  
+  mutate(name = gsub("[0-9]{6}-Sophie-", "", seq_id),
+         name = gsub("Son-", "", name),
+         name = gsub("\\.[0-9]$", "", name),
+         name = gsub("-[0-9]$", "", name),
+         name = gsub("\\.", "-", name)) %>% 
+  mutate(sample = name) %>% 
+  mutate(name = paste0(clade, ':', mlst, ':', name)) |> 
+  mutate(clade = ifelse(clade == 'CladeNA', NA, clade),
+         mlst = ifelse(is.na(clade), NA, mlst)) |> 
+  select(isolate_seq_id = seq_id, clade, mlst, clin_id = sample)
+
+
+# Metaphlan Profiles in Strainphlan
+files = list.files(here('data', 'strainphlan', 'dfi_clin_cdiffspecific_73', 'profiles'), pattern = '*.txt', full.names = T)
+
+temp_list = list()
+
+for(file in files) {
+  temp_list[[file]] = read.table(file) |> 
+    mutate(file = basename(file))
+}
+
+
+df_mps_clin = do.call(rbind, temp_list) |> 
+  `rownames<-`(NULL) |> 
+  `colnames<-`(c('clade', 'taxid', 'ra', 'file')) |>
+  mutate(clin_seq_id = gsub('_R1.txt', '', file)) |> 
+  filter(grepl('t__GGB4453|UNCLASSIFIED', clade, ignore.case = T)) |> 
+  mutate(clade = ifelse(grepl('t__GGB4453', clade), 'ra_cdiff', 'ra_unclassified')) |> 
+  pivot_wider(id_cols = c(clin_seq_id), names_from = clade, values_from = ra, values_fill = 0) 
+
+# Combined Clinical Metadata
+df_meta_clin = read.csv(here('data', 'strainphlan', 'SS.TAX.021-collect_df_2024-12-24.csv')) |> 
+  mutate(isolate_seq_id = gsub('\\.fna', '', isolate_fna)) |> 
+  left_join(df_meta_dfi_isolates) |> 
+  select(clin_seq_id = shotgunSeq_id, isolate_seq_id, 
+         clade, mlst,
+         cdiff_16s = Cdiff.16S, cdiff_cobas_test = cobas.Cdiff.Test,
+         read_count, cdiff_ra_0.20 = statq_0.20_cdiff_ra, cdiff_ra_0.05 = statq_0.05_cdiff_ra) |> 
+  left_join(df_mps_clin |> select(clin_seq_id, cdiff_ra_mps = ra_cdiff)) |> 
+  left_join(
+    read.csv(here('data', 'strainphlan', 'SS73_isolate_ids.csv')) |> 
+      mutate(seqid = gsub('\\.fna', '', seqid)) |> 
+      select(clin_name = sample_id, isolate_name = culture_id, isolate_seq_id = seqid, clin_seq_id = shotgunSeq_id)) |> 
+  mutate(isolate_name = paste0(clin_name, ' (', mlst, ')')) |> 
+  mutate(clin_id = gsub('[0-9]{6}-Sophie-Son-|[0-9]{6}-Sophie-', '', isolate_seq_id),
+         clin_id = gsub('\\.', '-', clin_id),
+         clin_id = gsub('-[0-9]$', '', clin_id))
+
+
+## ani 
+isolate_ani <- ani %>% 
+  pivot_longer(-key,
+               names_to = "sample_2",
+               values_to = "ani") %>% 
+  filter(!grepl("CDI", key) & !grepl("CDI", sample_2)) %>% 
+  mutate(key = str_remove(key, "v"),
+         sample_2 = str_remove(sample_2, "v")) %>% 
+  left_join(SS73_samplist %>% 
+              select(key = strain, 
+                     mlst_clade, ST,
+                     sample_id, culture_id)) %>% 
+  filter(!is.na(culture_id)) %>% 
+  filter(sample_2 %in% key) %>% 
+  left_join(SS73_samplist %>%
+              select(sample_2 = strain, culture_id_2 = culture_id))
+
+```
+
+
+```{r S9_sp_clin_tree, fig.height=10, fig.width =10, fig.cap = "Maximum-likelihood phylogenetic tree StrainPhlAn4 output of patient-derived *C. difficile* isolate spike-ins (red) into patient stool metagenomic samples (n=5). For each spike-in, the *C. difficile* genome were randomly sampled at 30,000 (1x) or 60,000 (2x) reads while the isolated culture genomes (blue) and the reference tree (gray) were sampled at 300,000 reads (10x) using optimized settings."}
+
+# Default Strainphlan tree
+tree_dfi_clin_default = ape::read.tree(here('data', 'strainphlan', 'dfi_clin_cdiffspecific_73', 'strainphlan_output_default', 'RAxML_bestTree.t__GGB4453.StrainPhlAn4.tre'))
+tree_dfi_clin_default$tip.label = gsub("_R1", "", tree_dfi_clin_default$tip.label)
+
+df_meta_tree_dfi_clin_default = data.frame(sample_id = tree_dfi_clin_default$tip.label) |> 
+  mutate(type = case_when(
+    grepl('^SRR|^ERR', sample_id) ~ 'Reference',
+    grepl('Sophie', sample_id, ignore.case = T) ~ 'Reference DFI Isolate',
+    T ~ 'Clinical Sample')) |> 
+  left_join(rbind(
+    df_meta_ref260 |> select(sample_id = sra_accession, name = mlst),
+    df_meta_clin |> select(sample_id = isolate_seq_id, name = isolate_name),
+    df_meta_clin |> select(sample_id = clin_seq_id, name = clin_name)
+  )) |> 
+  filter(!is.na(name)) 
+
+# optimized
+tree_dfi_clin_path = here('data', 'strainphlan', 'dfi_clin_cdiffspecific_73', 'strainphlan_output_br60_mra4', 'RAxML_bestTree.t__GGB4453.StrainPhlAn4.tre')
+
+sp_clin_tree = ape::read.tree(tree_dfi_clin_path)#$
+sp_clin_tree$tip.label = gsub("_R1", "", sp_clin_tree$tip.label)
+
+sp_clin_dist <- read.csv(here(data_PATH, "strainphlan","fig6_distmat.csv"))
+
+df_meta_tree_dfi_clin = data.frame(sample_id = sp_clin_tree$tip.label) |> 
+  mutate(type = case_when(
+    grepl('^SRR|^ERR', sample_id) ~ 'Reference',
+    grepl('Sophie', sample_id, ignore.case = T) ~ 'Reference DFI Isolate',
+    T ~ 'Clinical Sample')) |> 
+  left_join(rbind(
+    df_meta_ref260 |> select(sample_id = sra_accession, name = mlst, clade),
+    df_meta_clin |> select(sample_id = isolate_seq_id, name = isolate_name, clade),
+    df_meta_clin |> select(sample_id = clin_seq_id, name = clin_name, clade)
+  )) |> 
+  filter(!is.na(name)) 
+
+## use for highlights
+clin_tips <- data.frame(sample_id = sp_clin_tree$tip.label) %>%
+  # add the ST information to the tree
+  left_join(df_meta_tree_dfi_clin, 
+            by = "sample_id")
+
+
+# add information for highlights
+clin_hilight <- as_tibble(sp_clin_tree) %>% 
+  #select(node, label) %>% 
+  left_join(clin_tips %>% 
+              dplyr::rename("label"="sample_id"), 
+            by = "label") %>% 
+  select(node, label = name, old.label = label, clade, type)
+
+
+# add helper data to tree
+clin_phy = as.phylo(sp_clin_tree)
+# change tip label
+clin_phy$tip.label = clin_tips$name
+#Clade2_phy$tip.label = new_tips$name1
+
+# add the extra data
+clin_tree_join = full_join(clin_phy,
+                        clin_hilight, 
+                        by = c("node"))
+
+
+clin_tree_p = ggtree(clin_tree_join)   +
+  geom_tippoint(
+    aes(fill = clade),
+    size = 0.5,
+    shape = 21
+  )+
+  scale_fill_manual(
+    "Clade",
+    values = c(
+      "Clade1" = cdiff_clade_cols[[1]],
+      "Clade2" = cdiff_clade_cols[[2]], 
+      "Clade3"= cdiff_clade_cols[[3]],
+      "Clade4"= cdiff_clade_cols[[4]],
+      "Clade5"= cdiff_clade_cols[[5]], 
+      "CladeC-I"= cdiff_clade_cols[[6]], 
+      "CladeC-II"= cdiff_clade_cols[[6]], 
+      "CladeC-III"= cdiff_clade_cols[[6]]
+      )
+  ) +
+  new_scale_fill() + # new
+  geom_tiplab(
+      aes(color = type),
+      geom = "text",
+      size = 5/ggplot2::.pt,
+      align = FALSE,
+      offset = 0,
+      #show.legend = FALSE
+      ) +
+  scale_color_manual(
+   values = c('Clinical Sample' = 'darkred', 
+              'Reference' = 'grey70', 
+              'Reference DFI Isolate' = 'darkblue'),
+    guide = "none")+
+  geom_treescale(x=0.1, y=60,
+                 fontsize =6/ggplot2::.pt)+
+  theme(
+    # remove weird lines
+    axis.line = element_blank(),
+    # move legend
+    legend.title = element_text(size = 7), 
+    legend.text = element_text(size=6),
+    legend.position = c(0.7,0.6), 
+    legend.direction = "vertical")
+
+clin_tree_p+
+  labs(tag = "Fig S9")+
+  tag_theme()
+```
+
+
+
+```{r Fig5A_sp_cdiff_detect, fig.width=3, fig.height=3, fig.cap = "Improved detection *C. difficile* from patient fecal metagenomic samples using optimized StrainPhlAn4 compared to default (n=73)."}
+
+
+df_meta_clin |> 
+  select(sample_id = clin_seq_id) |> 
+  left_join(df_meta_tree_dfi_clin |> mutate(`Optimized` = 1) |> select(sample_id, `Optimized`)) |> 
+  left_join(df_meta_tree_dfi_clin_default |> mutate(`Default` = 1) |> select(sample_id, `Default`)) |> 
+  select(sample_id, Default, Optimized) |> 
+  pivot_longer(!sample_id, names_to = 'type', values_to = 'presence') |> 
+  mutate(presence = ifelse(is.na(presence), 0, presence)) |> 
+  group_by(type) |> 
+  summarize(n = sum(presence)) |> 
+  ggplot(aes(x = type, y = n))+
+  geom_bar(
+    aes(fill = type),
+    stat = "identity",
+    color= "black")+
+  scale_y_continuous(
+    expand = expansion(c(0.01, 0.1))
+  )+
+  scale_fill_manual(
+    values = c(
+      "Default" = "#4a4063",
+      "Optimized" = "#a53860")
+  )+
+  geom_text(
+    aes(label = n),
+    position = position_stack(vjust = 1.1), # Centers text within bars
+    size = 6 / ggplot2::.pt
+  ) +
+  labs(
+    y = "*C. difficile* detected samples"
+  )+
+  sophie_theme()+
+  theme(
+    aspect.ratio = 1,
+    axis.title.x = element_blank(),
+    legend.position = "none"
+  ) -> sp_cdiff_detect_p
+
+sp_cdiff_detect_p+
+  labs(tag = "Fig 5A") +
+  tag_theme()
+
+```
+```{r Fig5B_sp_cdiff_lod, fig.width=4, fig.height=4, fig.cap = "Boxplots reporting the estimated *C. difficile* reads in samples detected as  *C. difficile* positive by only MetaPhlAn4 or by MetaPhlAn4 and StrainPhlAn4."}
+
+df_p = df_meta_clin |> 
+  select(sample_id = clin_seq_id, isolate_seq_id, mlst, read_count, cdiff_ra_0.05, cdiff_ra_mps, clin_name, isolate_name) |> 
+  left_join(df_meta_tree_dfi_clin |> mutate(tree_presence = 1) |> select(sample_id, tree_presence)) |> 
+  
+  mutate(category = case_when(
+    is.na(tree_presence) & cdiff_ra_mps == 0 ~ 'Undetected',
+    is.na(tree_presence) & cdiff_ra_mps > 0 ~ 'Detected MetaPhlAn4',
+    !is.na(tree_presence) ~ 'Detected StrainPhlAn',
+    T ~ NA)) |> 
+  
+  mutate(category_readcount = case_when(
+    read_count >= 4000000 & read_count < 6000000 ~ '4-6mil',
+    read_count >= 6000000 & read_count < 8000000 ~ '6-8mil',
+    read_count >= 8000000 & read_count < 10000000 ~ '8-10mil',
+    read_count >= 10000000 ~ '>10mil',
+    T ~ NA)) |> 
+  
+  mutate(category = factor(category, levels = c('Undetected', 'Detected MetaPhlAn4','Detected StrainPhlAn'))) |> 
+  mutate(cdiff_reads = (cdiff_ra_0.05/100)*read_count)
+
+
+df_detected_s = df_p |> 
+  filter(category == 'Detected StrainPhlAn') |> 
+  select(clin_name, isolate_name, clin_seq_id = sample_id, mlst, isolate_seq_id)
+
+
+df_p |> 
+  mutate(category = factor(category,
+                           levels = c('Detected MetaPhlAn4', 'Detected StrainPhlAn', 'Undetected'),
+                           labels = c("MetaPhlAn4", "StrainPhlAn", 'Undetected'))) %>% 
+  filter(category != 'Undetected') |> 
+  ggplot(aes(x = category, 
+             y = cdiff_reads)) +
+  geom_boxplot(
+    aes(fill = category),
+    outlier.shape = NA) +
+  geom_point() +
+  theme_classic() +
+  scale_y_continuous(expand= expansion(0.01, 0.3),
+                     trans = 'log10', 
+                     labels = scales::label_comma()) +
+  scale_fill_manual(values = c('MetaPhlAn4' = tax_class_cols[["Metaphlan4_default"]], 
+                               'StrainPhlAn' = "#a53860"))+
+  ggpubr::stat_compare_means(label = 'p.signif', 
+                             comparisons = list(c('MetaPhlAn4', 'StrainPhlAn'))) +
+  labs(x = '', 
+       y = 'Estimated *C. difficile* reads')+
+  sophie_theme()+
+  theme(legend.position = "none") -> sp_est_lod_p
+
+
+sp_est_lod_p+
+  labs(tag = "Fig 5B") +
+  tag_theme()
+
+```
+
+
+```{r Fig5C_dist_heat, fig.height=7.5, fig.width =7.5, fig.cap = "Heat map of pairwise branch length distances between patient metagenomic samples compared to cultured isolate genomes."}
+dist_heat_df <- sp_clin_dist %>% 
+  # rows are metagenomes (n=22)
+  filter(!grepl("Sophie-", X)& 
+           !grepl("ERR", X) &
+           !grepl("SRR",X)) %>% 
+  mutate(shotgunSeq_id = str_remove(X, "_R1$")) %>% 
+  left_join(study.redcap.TOTAL %>% 
+              select(genoMatchID, shotgunSeq_id)) %>% 
+  column_to_rownames(var = "genoMatchID") %>% 
+  # cols are WGS 
+  select(contains(c("Sophie"))) %>% 
+  rownames_to_column(var = "genoMatchID") %>% 
+  pivot_longer(
+    -genoMatchID,
+    names_to = "isolate_samp",
+    values_to = "dist"
+  ) %>% 
+  mutate(isolate_samp = str_remove(isolate_samp, "^X")) %>% 
+  left_join(SS73_samplist %>% 
+              mutate(
+                seqid = str_remove(seqid, "\\.fna$"),
+                isolate_samp = str_replace_all(seqid, "-", "\\.")) %>% 
+              select(wgs_geno = genoMatchID, culture_id, isolate_samp)) %>% 
+  filter(!is.na(culture_id)) %>% 
+  # only keep wgs if there is an equivalent metagenome
+  filter(wgs_geno %in% unique(genoMatchID)) %>% 
+  # add labels for metagenome
+  left_join(SS73_samplist %>% 
+              select(genoMatchID, metagenome_id=sample_id))
+
+dist_heat_mat <- dist_heat_df %>% 
+    # select desired columns
+  select(metagenome_id, culture_id, dist) %>% 
+  mutate(dist=log10(dist)) %>% 
+  arrange(desc(dist)) %>% 
+  mutate(metagenome_id = factor(metagenome_id,
+                                levels = unique(metagenome_id))) %>% 
+  pivot_wider(
+    names_from = culture_id,
+    values_from = dist,
+    values_fill = 0
+              ) %>% 
+  column_to_rownames(var = "metagenome_id") %>% 
+  as.matrix()
+
+
+## colors for heatmap --------
+dist_cols = circlize::colorRamp2(
+  c(log10(c( 1e-6, 1e-5, 1e-4, 1e-3, 1e-2)), 0), 
+  c("#3A0CA3","#7209B7", "#D100D1", "#E500A4","#F8CBEB", "white"))
+
+legend_dist =  Legend(
+  title = "log10 branch dist.",
+  #title_position = "topcenter",
+  col_fun = dist_cols,
+  at = c(log10(c( 1e-6, 1e-5, 1e-4, 1e-3, 1e-2)), 0), 
+  labels = c("-6", "-5", "-4", "-3", "-2", "1"),
+  direction = "v")
+
+
+culture_dist_clust = dendsort::dendsort(hclust(dist(t(dist_heat_mat))))
+#plot(culture_dist_clust)
+
+culture_order = names(seriation::get_order(culture_dist_clust))
+
+# Plot the rotated dendrogram
+
+sample_dist_clust = dendsort::dendsort(hclust(dist(dist_heat_mat)))
+#plot(sample_dist_clust)
+
+
+col_order = names(seriation::get_order(culture_dist_clust))
+row_order = str_extract(col_order, "UCM_[0-9]{2}")
+
+# order dist heatmap by hclust default of rows
+Heatmap(dist_heat_mat,
+  col = dist_cols,
+  border = "black",
+  rect_gp = gpar(col = "white", 
+                 lwd = line_size/2),
+  cluster_rows = TRUE,
+  clustering_distance_rows = "euclidean",
+  clustering_method_rows = "complete",
+  row_dend_side = "left",
+  row_dend_reorder = TRUE,
+  
+  cluster_columns = TRUE,
+  clustering_distance_columns = "euclidean",
+  clustering_method_columns = "complete",
+  column_dend_side = "top",
+  column_dend_reorder = TRUE,
+  #heatmap_legend_param = list(direction = "vertical"),
+  show_heatmap_legend =FALSE,
+  #heatmap_legend_param = list(title = "log10 branch dist."),
+  #show_row_names = FALSE,
+
+  column_names_side = "bottom",
+  column_names_gp = gpar(
+    fontfamily = font,
+    fontsize = 7),
+  column_names_max_height = unit(7, "mm"),
+  row_names_side = "right",
+  row_names_gp = gpar(
+    fontfamily = font,
+    fontsize = 7),
+  row_names_max_width = unit(7, "mm"),
+
+  # size of entire heatmap
+  heatmap_width = unit(120, "mm"),
+  heatmap_height = unit(120, "mm")
+  )-> dist_heat
+
+dist_lgd <- packLegend(legend_dist, gap = unit(10, "mm"))
+
+as.ggplot(
+  grid.grabExpr({
+    draw(dist_heat,
+         annotation_legend_list = list(legend_dist),
+         heatmap_legend_side = "left"
+    )
+  })
+) -> sp_dist_heat_p
+
+ sp_dist_heat_p+
+  labs(tag = "Fig 5C") +
+   tag_theme() 
+ 
+```
+
+```{r Fig5D_isolate_ani_heat, fig.height=10, fig.width =10, fig.cap = "Heatmap of genomic ANI distances between *C. difficile* cultured isolate genomes."}
+isolate_ani_df <- isolate_ani %>% 
+  filter((culture_id %in% dist_heat_df$culture_id )&
+           (culture_id_2 %in% dist_heat_df$culture_id )) %>% 
+  select(-sample_2) %>% 
+  pivot_wider(
+    names_from = culture_id_2,
+    values_from = ani,
+    values_fill = 0
+  ) 
+
+isolate_ani_mat <- isolate_ani_df %>% 
+  select(-key, -mlst_clade, -ST, -sample_id) %>% 
+  column_to_rownames("culture_id") %>% 
+  as.matrix()
+  
+
+ani_colors = circlize::colorRamp2(c(0.95, 0.98,0.99, 1), c("white", "#D0536E", "#b32241", "#340913"))
+
+legend_ANI =  Legend(
+  title = "ANI",
+  #title_position = "topcenter",
+  col_fun = ani_colors,
+  at = c( 0.95,0.96, 0.97,0.98, 0.99, 1),
+  labels = c("0.95", "0.96", "0.97","0.98", "0.99", "1"),
+  direction = "v")
+
+#isolate_ani_clust = hclust(dist(isolate_ani_mat))
+#ani_sort = dendsort::dendsort(isolate_ani_clust)
+#plot(ani_sort)
+#ani_order <- names(seriation::get_order(ani_sort))
+
+Heatmap(
+  isolate_ani_mat,
+          col = ani_colors,
+          border = "black",
+          # clustering
+          #row_order = ani_order,
+          #column_order= ani_order,
+          
+          cluster_rows = TRUE,
+          clustering_distance_rows = "euclidean",
+          clustering_method_rows = "complete",
+          row_dend_side = "right",
+  row_dend_reorder = FALSE,
+  
+          cluster_columns = TRUE,
+          clustering_distance_columns = "euclidean",
+          clustering_method_columns = "complete",
+          column_dend_side = "top",
+  column_dend_reorder = FALSE,
+          # split by clade
+          show_row_names = TRUE,
+          #show_column_names = FALSE,
+          column_names_gp = gpar(fontsize = 10),
+          column_dend_height = unit(2, "cm"),
+          column_names_side = "bottom",
+          row_names_gp = gpar(fontsize = 10),
+          row_names_side = "right",
+          
+          # legend settings 
+          heatmap_legend_param = list(direction = "horizontal"),
+          show_heatmap_legend = FALSE,
+          
+          # heatmap body size 
+          width = unit(140, "mm"),
+          height = unit(140, "mm")) -> isolate_ani_heat
+
+#add figure tag to complexheatmap
+
+as.ggplot(
+  grid.grabExpr({
+    draw(isolate_ani_heat,
+    heatmap_legend_list = legend_ANI,
+    merge_legend = FALSE,  
+    heatmap_legend_side = "right",
+    background = "transparent")
+  })
+) -> isolate_ani_heat_p
+
+isolate_ani_heat_p+
+  labs(tag = "Fig 5D") +
+  tag_theme()
+
+```
